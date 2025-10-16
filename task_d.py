@@ -5,8 +5,7 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                               QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
                               QComboBox, QLineEdit, QMenu, QInputDialog, QCheckBox,
-                              QSpinBox, QFormLayout, QTextEdit, QDialogButtonBox, QWidget,
-                              QButtonGroup, QRadioButton, QScrollArea, QGroupBox)
+                              QSpinBox, QFormLayout, QTextEdit, QDialogButtonBox, QWidget)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from controller import NumericTableItem
@@ -26,13 +25,12 @@ class TaskDialog(QDialog):
         self.current_table = None
         self.current_columns = []
         self.all_columns_info = []
-        self.is_join_mode = False
-        self.selected_tables_for_join = []
 
         self.setWindowTitle("Техническое задание - Управление БД")
         self.setMinimumSize(1200, 700)
 
         self.setup_ui()
+        self.load_tables()
 
     def setup_ui(self):
         """Настройка пользовательского интерфейса."""
@@ -45,73 +43,70 @@ class TaskDialog(QDialog):
         title_layout.addStretch()
         layout.addLayout(title_layout)
 
-        # Переключатель режима: обычная таблица / JOIN
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("<b>Режим работы:</b>"))
+        # Панель выбора таблицы
+        table_selection_layout = QHBoxLayout()
 
-        self.mode_group = QButtonGroup(self)
-        self.table_mode_radio = QRadioButton("Обычная таблица")
-        self.join_mode_radio = QRadioButton("Метод JOIN")
-        self.table_mode_radio.setChecked(True)
+        table_selection_layout.addWidget(QLabel("Выбор таблицы:"))
 
-        self.mode_group.addButton(self.table_mode_radio)
-        self.mode_group.addButton(self.join_mode_radio)
+        self.table_combo = QComboBox()
+        self.table_combo.setMinimumWidth(200)
+        self.table_combo.currentTextChanged.connect(self.on_table_changed)
+        table_selection_layout.addWidget(self.table_combo)
 
-        self.table_mode_radio.toggled.connect(self.on_mode_changed)
+        # Кнопка переименования таблицы
+        self.rename_table_btn = QPushButton("⚙ Переименовать")
+        self.rename_table_btn.setMaximumWidth(150)
+        self.rename_table_btn.clicked.connect(self.rename_current_table)
+        table_selection_layout.addWidget(self.rename_table_btn)
 
-        mode_layout.addWidget(self.table_mode_radio)
-        mode_layout.addWidget(self.join_mode_radio)
-        mode_layout.addStretch()
-        layout.addLayout(mode_layout)
+        # Кнопка вывода данных
+        self.display_btn = QPushButton("📊 Вывод данных")
+        self.display_btn.setMaximumWidth(150)
+        self.display_btn.clicked.connect(self.show_display_options)
+        table_selection_layout.addWidget(self.display_btn)
 
-        # Панель выбора таблиц/столбцов
-        self.selection_widget = QWidget()
-        self.selection_layout = QVBoxLayout(self.selection_widget)
-        layout.addWidget(self.selection_widget)
+        table_selection_layout.addStretch()
+        layout.addLayout(table_selection_layout)
 
         # Таблица данных
         self.data_table = QTableWidget()
         self.data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.data_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.data_table.setSelectionBehavior(QTableWidget.SelectItems)  # Выбор ячеек
-        self.data_table.setSelectionMode(QTableWidget.SingleSelection)  # Одна ячейка
+        self.data_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.data_table.verticalHeader().setVisible(False)
 
-        # Убираем обработку клика по заголовку
+        # Обработка клика по заголовку столбца
+        self.data_table.horizontalHeader().sectionClicked.connect(self.on_column_header_clicked)
+
         layout.addWidget(self.data_table)
 
         # Панель кнопок
         buttons_layout = QHBoxLayout()
 
-        # Кнопка поиска
+        # Кнопка поиска (самая левая)
         self.search_btn = QPushButton("🔍 Поиск")
         self.search_btn.clicked.connect(self.open_search_dialog)
         buttons_layout.addWidget(self.search_btn)
 
         # Кнопка редактирования
         self.edit_btn = QPushButton("✏ Редактировать")
-        self.edit_btn.clicked.connect(self.open_edit_dialog)
+        self.edit_btn.clicked.connect(self.show_edit_menu)
         buttons_layout.addWidget(self.edit_btn)
 
         # Кнопка добавления
         self.add_btn = QPushButton("➕ Добавить")
-        self.add_btn.clicked.connect(self.open_add_dialog)
+        self.add_btn.clicked.connect(self.show_add_menu)
         buttons_layout.addWidget(self.add_btn)
 
-        # Кнопка удаления
-        self.delete_btn = QPushButton("🗑 Удалить")
-        self.delete_btn.clicked.connect(self.open_delete_dialog)
+        # Кнопка удаления записи
+        self.delete_btn = QPushButton("🗑 Удалить запись")
+        self.delete_btn.clicked.connect(self.delete_record)
         buttons_layout.addWidget(self.delete_btn)
 
-        # Кнопка сортировки/группировки/фильтрации
-        self.sort_btn = QPushButton("📊 Сортировка/Фильтрация")
-        self.sort_btn.clicked.connect(self.open_sort_filter_dialog)
-        buttons_layout.addWidget(self.sort_btn)
-
-        # Кнопка вывода данных
-        self.display_btn = QPushButton("📋 Вывод данных")
-        self.display_btn.clicked.connect(self.open_display_dialog)
-        buttons_layout.addWidget(self.display_btn)
+        # Кнопка строковых функций
+        self.string_func_btn = QPushButton("📝 Строковые функции")
+        self.string_func_btn.clicked.connect(self.show_string_functions)
+        buttons_layout.addWidget(self.string_func_btn)
 
         buttons_layout.addStretch()
 
@@ -122,192 +117,38 @@ class TaskDialog(QDialog):
 
         layout.addLayout(buttons_layout)
 
-        # Инициализируем панель выбора
-        self.update_selection_panel()
-
-    def on_mode_changed(self):
-        """Обработка изменения режима работы."""
-        self.is_join_mode = self.join_mode_radio.isChecked()
-        self.update_selection_panel()
-
-    def update_selection_panel(self):
-        """Обновление панели выбора таблиц/столбцов в зависимости от режима."""
-        # Очищаем текущую панель
-        while self.selection_layout.count():
-            child = self.selection_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-
-        if self.is_join_mode:
-            # Режим JOIN
-            self.setup_join_selection()
-        else:
-            # Режим обычной таблицы
-            self.setup_table_selection()
-
-    def setup_table_selection(self):
-        """Настройка панели для обычной таблицы."""
-        # Выбор таблицы
-        table_layout = QHBoxLayout()
-        table_layout.addWidget(QLabel("Таблица:"))
-
-        self.table_combo = QComboBox()
-        self.table_combo.setMinimumWidth(200)
+    def load_tables(self):
+        """Загрузка списка таблиц из БД."""
         tables = self.controller.get_all_tables()
+        self.table_combo.clear()
         self.table_combo.addItems(tables)
-        self.table_combo.currentTextChanged.connect(self.on_table_selected)
-        table_layout.addWidget(self.table_combo)
-        table_layout.addStretch()
 
-        self.selection_layout.addLayout(table_layout)
-
-        # Выбор столбцов через галочки
-        columns_group = QGroupBox("Выбор столбцов для отображения:")
-        columns_scroll = QScrollArea()
-        columns_scroll.setWidgetResizable(True)
-        columns_scroll.setMaximumHeight(150)
-
-        self.columns_widget = QWidget()
-        self.columns_checks_layout = QVBoxLayout(self.columns_widget)
-        self.columns_checks = {}
-
-        columns_scroll.setWidget(self.columns_widget)
-        columns_group_layout = QVBoxLayout(columns_group)
-        columns_group_layout.addWidget(columns_scroll)
-
-        self.selection_layout.addWidget(columns_group)
-
-        # Загружаем первую таблицу
-        if self.table_combo.count() > 0:
-            self.on_table_selected(self.table_combo.currentText())
-
-    def setup_join_selection(self):
-        """Настройка панели для JOIN."""
-        # Выбор таблиц для JOIN
-        tables_group = QGroupBox("Выбор таблиц для объединения:")
-        tables_scroll = QScrollArea()
-        tables_scroll.setWidgetResizable(True)
-        tables_scroll.setMaximumHeight(100)
-
-        tables_widget = QWidget()
-        self.tables_checks_layout = QVBoxLayout(tables_widget)
-        self.tables_checks = {}
-
-        all_tables = self.controller.get_all_tables()
-        for table in all_tables:
-            check = QCheckBox(table)
-            check.stateChanged.connect(self.on_join_tables_changed)
-            self.tables_checks[table] = check
-            self.tables_checks_layout.addWidget(check)
-
-        tables_scroll.setWidget(tables_widget)
-        tables_group_layout = QVBoxLayout(tables_group)
-        tables_group_layout.addWidget(tables_scroll)
-
-        self.selection_layout.addWidget(tables_group)
-
-        # Выбор столбцов (появится после выбора таблиц)
-        self.join_columns_group = QGroupBox("Выбор столбцов для отображения:")
-        self.join_columns_scroll = QScrollArea()
-        self.join_columns_scroll.setWidgetResizable(True)
-        self.join_columns_scroll.setMaximumHeight(150)
-
-        self.join_columns_widget = QWidget()
-        self.join_columns_layout = QVBoxLayout(self.join_columns_widget)
-        self.join_column_checks = {}
-
-        self.join_columns_scroll.setWidget(self.join_columns_widget)
-        join_columns_group_layout = QVBoxLayout(self.join_columns_group)
-        join_columns_group_layout.addWidget(self.join_columns_scroll)
-
-        self.selection_layout.addWidget(self.join_columns_group)
-        self.join_columns_group.setVisible(False)
-
-    def on_table_selected(self, table_name):
-        """Обработка выбора таблицы в режиме обычной таблицы."""
+    def on_table_changed(self, table_name):
+        """Обработка изменения выбранной таблицы."""
         if not table_name:
             return
 
         self.current_table = table_name
-
-        # Обновляем список столбцов
-        self.all_columns_info = self.controller.get_table_columns(table_name)
-
-        # Очищаем старые чекбоксы
-        while self.columns_checks_layout.count():
-            child = self.columns_checks_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-
-        self.columns_checks.clear()
-
-        # Создаем новые чекбоксы
-        for col in self.all_columns_info:
-            check = QCheckBox(f"{col['name']} ({col['type']})")
-            check.setChecked(True)
-            check.stateChanged.connect(self.on_columns_changed)
-            self.columns_checks[col['name']] = check
-            self.columns_checks_layout.addWidget(check)
-
-        # Загружаем данные
         self.load_table_data()
 
-    def on_join_tables_changed(self):
-        """Обработка изменения выбранных таблиц для JOIN."""
-        selected_tables = [name for name, check in self.tables_checks.items() if check.isChecked()]
-
-        if len(selected_tables) < 1:
-            self.join_columns_group.setVisible(False)
-            return
-
-        # Показываем панель выбора столбцов
-        self.join_columns_group.setVisible(True)
-
-        # Очищаем старые чекбоксы
-        while self.join_columns_layout.count():
-            child = self.join_columns_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-
-        self.join_column_checks.clear()
-
-        # Создаем чекбоксы для каждого столбца каждой таблицы
-        for table in selected_tables:
-            # Добавляем заголовок таблицы
-            table_label = QLabel(f"<b>{table}:</b>")
-            self.join_columns_layout.addWidget(table_label)
-
-            # Получаем столбцы
-            columns = self.controller.get_table_columns(table)
-            for col in columns:
-                check = QCheckBox(f"  {col['name']} ({col['type']})")
-                check.setChecked(True)
-                self.join_column_checks[f"{table}.{col['name']}"] = check
-                self.join_columns_layout.addWidget(check)
-
-    def on_columns_changed(self):
-        """Обработка изменения выбранных столбцов."""
-        self.load_table_data()
-
-    def load_table_data(self, where=None, order_by=None, group_by=None, having=None):
+    def load_table_data(self, columns=None, where=None, order_by=None, group_by=None, having=None):
         """Загрузка данных таблицы."""
         if not self.current_table:
             return
 
-        # Определяем выбранные столбцы
-        selected_columns = [name for name, check in self.columns_checks.items() if check.isChecked()]
+        # Получаем информацию о столбцах
+        self.all_columns_info = self.controller.get_table_columns(self.current_table)
 
-        if not selected_columns:
-            self.data_table.setRowCount(0)
-            self.data_table.setColumnCount(0)
-            return
-
-        self.current_columns = selected_columns
+        # Определяем столбцы для отображения
+        if columns:
+            self.current_columns = columns
+        else:
+            self.current_columns = [col['name'] for col in self.all_columns_info]
 
         # Получаем данные
         data = self.controller.get_table_data(
             self.current_table,
-            selected_columns,
+            self.current_columns if columns else None,
             where,
             order_by,
             group_by,
@@ -321,8 +162,10 @@ class TaskDialog(QDialog):
 
         for row_idx, row_data in enumerate(data):
             for col_idx, value in enumerate(row_data):
+                # Преобразуем значение в строку
                 str_value = str(value) if value is not None else ""
 
+                # Проверяем, является ли значение числовым для правильной сортировки
                 if isinstance(value, (int, float)):
                     item = NumericTableItem(str_value, value)
                 else:
@@ -332,67 +175,237 @@ class TaskDialog(QDialog):
 
         self.logger.info(f"Загружены данные таблицы {self.current_table}: {len(data)} строк")
 
-    def open_search_dialog(self):
-        """Открытие диалога поиска."""
-        if not self.current_table:
-            QMessageBox.warning(self, "Ошибка", "Выберите таблицу")
+    def on_column_header_clicked(self, logical_index):
+        """Обработка клика по заголовку столбца - открытие меню."""
+        if not self.current_table or logical_index >= len(self.current_columns):
             return
 
-        dialog = SearchDialog(self.controller, self.current_table, self.all_columns_info, self)
-        if dialog.exec_():
-            self.load_table_data(where=dialog.search_condition)
+        column_name = self.current_columns[logical_index]
 
-    def open_edit_dialog(self):
-        """Открытие диалога редактирования."""
-        if not self.current_table:
-            QMessageBox.warning(self, "Ошибка", "Выберите таблицу")
-            return
+        # Создаем контекстное меню
+        menu = QMenu(self)
 
-        dialog = EditDialog(self.controller, self.current_table, self.all_columns_info, self.data_table, self)
+        # Сортировка по возрастанию
+        sort_asc_action = QAction("⬆ Сортировать по возрастанию", self)
+        sort_asc_action.triggered.connect(lambda: self.sort_by_column(column_name, "ASC"))
+        menu.addAction(sort_asc_action)
+
+        # Сортировка по убыванию
+        sort_desc_action = QAction("⬇ Сортировать по убыванию", self)
+        sort_desc_action.triggered.connect(lambda: self.sort_by_column(column_name, "DESC"))
+        menu.addAction(sort_desc_action)
+
+        menu.addSeparator()
+
+        # Группировка
+        group_action = QAction("📊 Группировка с COUNT", self)
+        group_action.triggered.connect(lambda: self.group_by_column(column_name))
+        menu.addAction(group_action)
+
+        # Отображаем меню в позиции курсора
+        menu.exec_(self.data_table.horizontalHeader().mapToGlobal(
+            self.data_table.horizontalHeader().pos()))
+
+    def sort_by_column(self, column_name, order):
+        """Сортировка данных по столбцу."""
+        order_clause = f"{column_name} {order}"
+        self.load_table_data(order_by=order_clause)
+        self.logger.info(f"Сортировка по {column_name} {order}")
+
+    def group_by_column(self, column_name):
+        """Группировка данных по столбцу с COUNT."""
+        # Создаем запрос с группировкой
+        columns = [column_name, f"COUNT(*) as count"]
+        self.load_table_data(
+            columns=columns,
+            group_by=column_name,
+            order_by=f"COUNT(*) DESC"
+        )
+        self.logger.info(f"Группировка по {column_name}")
+
+    def show_add_menu(self):
+        """Показ меню добавления."""
+        menu = QMenu(self)
+
+        add_column_action = QAction("➕ Создать столбец", self)
+        add_column_action.triggered.connect(self.add_column)
+        menu.addAction(add_column_action)
+
+        add_record_action = QAction("➕ Создать запись", self)
+        add_record_action.triggered.connect(self.add_record)
+        menu.addAction(add_record_action)
+
+        menu.exec_(self.add_btn.mapToGlobal(self.add_btn.rect().bottomLeft()))
+
+    def show_edit_menu(self):
+        """Показ меню редактирования."""
+        menu = QMenu(self)
+
+        edit_column_action = QAction("✏ Редактировать столбец", self)
+        edit_column_action.triggered.connect(self.show_edit_column_menu)
+        menu.addAction(edit_column_action)
+
+        edit_record_action = QAction("✏ Редактировать запись", self)
+        edit_record_action.triggered.connect(self.edit_record)
+        menu.addAction(edit_record_action)
+
+        menu.exec_(self.edit_btn.mapToGlobal(self.edit_btn.rect().bottomLeft()))
+
+    def show_edit_column_menu(self):
+        """Показ меню редактирования столбца."""
+        dialog = EditColumnDialog(self.controller, self.current_table, self.all_columns_info, self)
         if dialog.exec_():
             self.load_table_data()
 
-    def open_add_dialog(self):
-        """Открытие диалога добавления."""
-        if not self.current_table:
-            QMessageBox.warning(self, "Ошибка", "Выберите таблицу")
-            return
-
-        dialog = AddDialog(self.controller, self.current_table, self.all_columns_info, self)
+    def add_column(self):
+        """Добавление нового столбца."""
+        dialog = AddColumnDialog(self.controller, self.current_table, self)
         if dialog.exec_():
             self.load_table_data()
 
-    def open_delete_dialog(self):
-        """Открытие диалога удаления."""
-        if not self.current_table:
-            QMessageBox.warning(self, "Ошибка", "Выберите таблицу")
-            return
-
-        dialog = DeleteDialog(self.controller, self.current_table, self.all_columns_info, self.data_table, self)
+    def add_record(self):
+        """Добавление новой записи."""
+        dialog = AddRecordDialog(self.controller, self.current_table, self.all_columns_info, self)
         if dialog.exec_():
             self.load_table_data()
 
-    def open_sort_filter_dialog(self):
-        """Открытие диалога сортировки/фильтрации."""
+    def edit_record(self):
+        """Редактирование выбранной записи."""
+        selected_rows = self.data_table.selectedItems()
+        if not selected_rows:
+            QMessageBox.warning(self, "Ошибка", "Выберите запись для редактирования")
+            return
+
+        row = selected_rows[0].row()
+        row_data = {}
+        for col_idx, col_name in enumerate(self.current_columns):
+            item = self.data_table.item(row, col_idx)
+            row_data[col_name] = item.text() if item else ""
+
+        dialog = EditRecordDialog(self.controller, self.current_table, self.all_columns_info, row_data, self)
+        if dialog.exec_():
+            self.load_table_data()
+
+    def delete_record(self):
+        """Удаление выбранной записи."""
+        selected_rows = self.data_table.selectedItems()
+        if not selected_rows:
+            QMessageBox.warning(self, "Ошибка", "Выберите запись для удаления")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Подтверждение",
+            "Вы уверены, что хотите удалить эту запись?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if confirm != QMessageBox.Yes:
+            return
+
+        row = selected_rows[0].row()
+
+        # Формируем WHERE условие на основе первого столбца (обычно это ID)
+        if not self.current_columns:
+            QMessageBox.warning(self, "Ошибка", "Нет данных для удаления")
+            return
+
+        first_col = self.current_columns[0]
+        first_value = self.data_table.item(row, 0).text()
+
+        where_clause = f"{first_col} = %s"
+        success, error = self.controller.delete_row(self.current_table, where_clause, [first_value])
+
+        if success:
+            QMessageBox.information(self, "Успех", "Запись успешно удалена")
+            self.load_table_data()
+        else:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить запись:\n{error}")
+
+    def rename_current_table(self):
+        """Переименование текущей таблицы."""
         if not self.current_table:
             QMessageBox.warning(self, "Ошибка", "Выберите таблицу")
             return
 
-        dialog = SortFilterDialog(self.controller, self.current_table, self.all_columns_info, self)
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Переименование таблицы",
+            f"Новое имя для таблицы '{self.current_table}':",
+            text=self.current_table
+        )
+
+        if ok and new_name and new_name != self.current_table:
+            success, error = self.controller.rename_table(self.current_table, new_name)
+            if success:
+                QMessageBox.information(self, "Успех", f"Таблица переименована: {self.current_table} → {new_name}")
+                self.load_tables()
+                # Устанавливаем новое имя как текущее
+                index = self.table_combo.findText(new_name)
+                if index >= 0:
+                    self.table_combo.setCurrentIndex(index)
+            else:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось переименовать таблицу:\n{error}")
+
+    def show_display_options(self):
+        """Показ опций вывода данных."""
+        dialog = DisplayOptionsDialog(self.controller, self.current_table, self.all_columns_info, self)
         if dialog.exec_():
-            self.load_table_data(
-                where=dialog.where_clause,
-                order_by=dialog.order_clause,
-                group_by=dialog.group_clause,
-                having=dialog.having_clause
+            # Применяем настройки отображения
+            if dialog.is_join_mode:
+                # Режим JOIN
+                self.execute_join_display(dialog.join_config)
+            else:
+                # Обычный режим с выбором столбцов
+                self.load_table_data(
+                    columns=dialog.selected_columns if dialog.selected_columns else None,
+                    where=dialog.where_clause if dialog.where_clause else None,
+                    order_by=dialog.order_clause if dialog.order_clause else None,
+                    group_by=dialog.group_clause if dialog.group_clause else None,
+                    having=dialog.having_clause if dialog.having_clause else None
+                )
+
+    def execute_join_display(self, join_config):
+        """Выполнение и отображение результатов JOIN."""
+        try:
+            results = self.controller.execute_join(
+                join_config['tables_info'],
+                join_config['selected_columns'],
+                join_config['join_conditions'],
+                join_config.get('where'),
+                join_config.get('order_by')
             )
 
-    def open_display_dialog(self):
-        """Открытие диалога вывода данных (выбор таблицы и переименование)."""
-        dialog = DisplayDialog(self.controller, self.current_table, self)
+            # Отображаем результаты
+            if results:
+                self.current_columns = join_config['column_labels']
+                self.data_table.setColumnCount(len(self.current_columns))
+                self.data_table.setHorizontalHeaderLabels(self.current_columns)
+                self.data_table.setRowCount(len(results))
+
+                for row_idx, row_data in enumerate(results):
+                    for col_idx, value in enumerate(row_data):
+                        str_value = str(value) if value is not None else ""
+                        item = QTableWidgetItem(str_value)
+                        self.data_table.setItem(row_idx, col_idx, item)
+
+                self.logger.info(f"Выполнен JOIN запрос: {len(results)} строк")
+            else:
+                QMessageBox.information(self, "Результат", "Запрос не вернул результатов")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка выполнения JOIN:\n{str(e)}")
+
+    def open_search_dialog(self):
+        """Открытие диалога поиска."""
+        dialog = SearchDialog(self.controller, self.current_table, self.all_columns_info, self)
         if dialog.exec_():
-            # Обновляем интерфейс если таблица была переименована
-            self.update_selection_panel()
+            # Применяем результаты поиска
+            self.load_table_data(where=dialog.search_condition)
+
+    def show_string_functions(self):
+        """Показ диалога строковых функций."""
+        dialog = StringFunctionsDialog(self.controller, self.current_table, self.all_columns_info, self)
+        dialog.exec_()
 
 
 class AddColumnDialog(QDialog):
@@ -1285,625 +1298,3 @@ class JoinWizardDialog(QDialog):
             'where': self.where_edit.text().strip() or None,
             'order_by': self.order_edit.text().strip() or None
         }
-}
-
-
-# Новые диалоги для отдельных окон
-
-class EditDialog(QDialog):
-    """Диалог редактирования (столбца или записи)."""
-    def __init__(self, controller, table_name, columns_info, data_table, parent=None):
-        super().__init__(parent)
-        self.controller = controller
-        self.table_name = table_name
-        self.columns_info = columns_info
-        self.data_table = data_table
-
-        self.setWindowTitle("Редактирование")
-        self.setMinimumWidth(500)
-        self.setup_ui()
-
-    def setup_ui(self):
-        """Настройка UI."""
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("<h3>Выберите действие:</h3>"))
-
-        # Кнопка редактирования столбца
-        edit_column_btn = QPushButton("✏ Редактировать столбец")
-        edit_column_btn.clicked.connect(self.edit_column)
-        layout.addWidget(edit_column_btn)
-
-        # Кнопка редактирования записи
-        edit_record_btn = QPushButton("✏ Редактировать запись")
-        edit_record_btn.clicked.connect(self.edit_record)
-        layout.addWidget(edit_record_btn)
-
-        layout.addStretch()
-
-        # Кнопка закрытия
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.reject)
-        layout.addWidget(close_btn)
-
-    def edit_column(self):
-        """Редактирование столбца."""
-        dialog = EditColumnWithFunctionsDialog(self.controller, self.table_name, self.columns_info, self)
-        if dialog.exec_():
-            self.accept()
-
-    def edit_record(self):
-        """Редактирование записи."""
-        selected_items = self.data_table.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "Ошибка", "Выберите ячейку в записи для редактирования")
-            return
-
-        row = selected_items[0].row()
-        row_data = {}
-
-        # Получаем все столбцы из таблицы
-        for col_idx in range(self.data_table.columnCount()):
-            col_name = self.data_table.horizontalHeaderItem(col_idx).text()
-            item = self.data_table.item(row, col_idx)
-            row_data[col_name] = item.text() if item else ""
-
-        dialog = EditRecordDialog(self.controller, self.table_name, self.columns_info, row_data, self)
-        if dialog.exec_():
-            self.accept()
-
-
-class EditColumnWithFunctionsDialog(QDialog):
-    """Диалог редактирования столбца со строковыми функциями."""
-    def __init__(self, controller, table_name, columns_info, parent=None):
-        super().__init__(parent)
-        self.controller = controller
-        self.table_name = table_name
-        self.columns_info = columns_info
-
-        self.setWindowTitle("Редактировать столбец")
-        self.setMinimumWidth(500)
-        self.setup_ui()
-
-    def setup_ui(self):
-        """Настройка UI."""
-        layout = QVBoxLayout(self)
-
-        # Выбор столбца
-        column_layout = QHBoxLayout()
-        column_layout.addWidget(QLabel("Столбец:"))
-        self.column_combo = QComboBox()
-        self.column_combo.addItems([col['name'] for col in self.columns_info])
-        column_layout.addWidget(self.column_combo)
-        layout.addLayout(column_layout)
-
-        # Операции
-        operations_label = QLabel("<b>Выберите операцию:</b>")
-        layout.addWidget(operations_label)
-
-        # Переименование
-        rename_btn = QPushButton("Переименовать столбец")
-        rename_btn.clicked.connect(self.rename_column)
-        layout.addWidget(rename_btn)
-
-        # Изменение типа
-        change_type_btn = QPushButton("Изменить тип данных")
-        change_type_btn.clicked.connect(self.change_column_type)
-        layout.addWidget(change_type_btn)
-
-        # Установка ограничения
-        set_constraint_btn = QPushButton("Установить ограничение")
-        set_constraint_btn.clicked.connect(self.set_constraint)
-        layout.addWidget(set_constraint_btn)
-
-        # Снятие ограничения
-        drop_constraint_btn = QPushButton("Снять ограничение")
-        drop_constraint_btn.clicked.connect(self.drop_constraint)
-        layout.addWidget(drop_constraint_btn)
-
-        # Удаление столбца
-        delete_btn = QPushButton("Удалить столбец")
-        delete_btn.clicked.connect(self.delete_column)
-        delete_btn.setStyleSheet("background-color: #d32f2f; color: white;")
-        layout.addWidget(delete_btn)
-
-        # Строковые функции
-        string_funcs_btn = QPushButton("📝 Строковые функции")
-        string_funcs_btn.clicked.connect(self.apply_string_functions)
-        layout.addWidget(string_funcs_btn)
-
-        layout.addStretch()
-
-        # Кнопка закрытия
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
-
-    def get_current_column(self):
-        """Получение текущего выбранного столбца."""
-        return self.column_combo.currentText()
-
-    def rename_column(self):
-        """Переименование столбца."""
-        old_name = self.get_current_column()
-        new_name, ok = QInputDialog.getText(
-            self, "Переименование столбца",
-            f"Новое имя для столбца '{old_name}':",
-            text=old_name
-        )
-
-        if ok and new_name and new_name != old_name:
-            success, error = self.controller.rename_column(self.table_name, old_name, new_name)
-            if success:
-                QMessageBox.information(self, "Успех", f"Столбец переименован: {old_name} → {new_name}")
-                current_index = self.column_combo.currentIndex()
-                self.columns_info[current_index]['name'] = new_name
-                self.column_combo.setItemText(current_index, new_name)
-            else:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось переименовать столбец:\n{error}")
-
-    def change_column_type(self):
-        """Изменение типа данных столбца."""
-        column = self.get_current_column()
-
-        types = ["INTEGER", "BIGINT", "VARCHAR(100)", "VARCHAR(200)", "TEXT", "BOOLEAN", "DATE", "TIMESTAMP", "NUMERIC"]
-        new_type, ok = QInputDialog.getItem(
-            self, "Изменение типа",
-            f"Новый тип для столбца '{column}':",
-            types, 0, False
-        )
-
-        if ok and new_type:
-            success, error = self.controller.alter_column_type(self.table_name, column, new_type)
-            if success:
-                QMessageBox.information(self, "Успех", f"Тип столбца '{column}' изменен на {new_type}")
-            else:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось изменить тип столбца:\n{error}")
-
-    def set_constraint(self):
-        """Установка ограничения на столбец."""
-        column = self.get_current_column()
-
-        constraints = ["NOT NULL", "UNIQUE", "CHECK"]
-        constraint, ok = QInputDialog.getItem(
-            self, "Установка ограничения",
-            f"Выберите тип ограничения для '{column}':",
-            constraints, 0, False
-        )
-
-        if not ok:
-            return
-
-        constraint_value = None
-        if constraint == "CHECK":
-            constraint_value, ok = QInputDialog.getText(
-                self, "Условие CHECK",
-                f"Введите условие CHECK для '{column}':\n(например: {column} > 0)"
-            )
-            if not ok or not constraint_value:
-                return
-
-        success, error = self.controller.set_constraint(
-            self.table_name, column, constraint, constraint_value
-        )
-
-        if success:
-            QMessageBox.information(self, "Успех", f"Ограничение {constraint} установлено на столбец '{column}'")
-        else:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось установить ограничение:\n{error}")
-
-    def drop_constraint(self):
-        """Снятие ограничения со столбца."""
-        column = self.get_current_column()
-
-        constraints = ["NOT NULL", "UNIQUE", "CHECK"]
-        constraint, ok = QInputDialog.getItem(
-            self, "Снятие ограничения",
-            f"Выберите тип ограничения для снятия с '{column}':",
-            constraints, 0, False
-        )
-
-        if ok:
-            success, error = self.controller.drop_constraint(self.table_name, column, constraint)
-            if success:
-                QMessageBox.information(self, "Успех", f"Ограничение {constraint} снято со столбца '{column}'")
-            else:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось снять ограничение:\n{error}")
-
-    def delete_column(self):
-        """Удаление столбца."""
-        column = self.get_current_column()
-
-        confirm = QMessageBox.question(
-            self, "Подтверждение",
-            f"Вы уверены, что хотите удалить столбец '{column}'?\nЭто действие необратимо!",
-            QMessageBox.Yes | QMessageBox.No
-        )
-
-        if confirm == QMessageBox.Yes:
-            success, error = self.controller.drop_column(self.table_name, column)
-            if success:
-                QMessageBox.information(self, "Успех", f"Столбец '{column}' удален")
-                self.accept()
-            else:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось удалить столбец:\n{error}")
-
-    def apply_string_functions(self):
-        """Применение строковых функций к столбцу."""
-        dialog = StringFunctionsDialog(self.controller, self.table_name, self.columns_info, self)
-        dialog.exec_()
-
-
-class AddDialog(QDialog):
-    """Диалог добавления (столбца или записи)."""
-    def __init__(self, controller, table_name, columns_info, parent=None):
-        super().__init__(parent)
-        self.controller = controller
-        self.table_name = table_name
-        self.columns_info = columns_info
-
-        self.setWindowTitle("Добавление")
-        self.setMinimumWidth(400)
-        self.setup_ui()
-
-    def setup_ui(self):
-        """Настройка UI."""
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("<h3>Выберите действие:</h3>"))
-
-        # Кнопка добавления столбца
-        add_column_btn = QPushButton("➕ Создать столбец")
-        add_column_btn.clicked.connect(self.add_column)
-        layout.addWidget(add_column_btn)
-
-        # Кнопка добавления записи
-        add_record_btn = QPushButton("➕ Создать запись")
-        add_record_btn.clicked.connect(self.add_record)
-        layout.addWidget(add_record_btn)
-
-        layout.addStretch()
-
-        # Кнопка закрытия
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.reject)
-        layout.addWidget(close_btn)
-
-    def add_column(self):
-        """Добавление столбца."""
-        dialog = AddColumnDialog(self.controller, self.table_name, self)
-        if dialog.exec_():
-            self.accept()
-
-    def add_record(self):
-        """Добавление записи."""
-        dialog = AddRecordDialog(self.controller, self.table_name, self.columns_info, self)
-        if dialog.exec_():
-            self.accept()
-
-
-class DeleteDialog(QDialog):
-    """Диалог удаления (столбца или записи)."""
-    def __init__(self, controller, table_name, columns_info, data_table, parent=None):
-        super().__init__(parent)
-        self.controller = controller
-        self.table_name = table_name
-        self.columns_info = columns_info
-        self.data_table = data_table
-
-        self.setWindowTitle("Удаление")
-        self.setMinimumWidth(400)
-        self.setup_ui()
-
-    def setup_ui(self):
-        """Настройка UI."""
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("<h3>Выберите действие:</h3>"))
-
-        # Кнопка удаления столбца
-        delete_column_btn = QPushButton("🗑 Удалить столбец")
-        delete_column_btn.clicked.connect(self.delete_column)
-        layout.addWidget(delete_column_btn)
-
-        # Кнопка удаления записи
-        delete_record_btn = QPushButton("🗑 Удалить запись")
-        delete_record_btn.clicked.connect(self.delete_record)
-        layout.addWidget(delete_record_btn)
-
-        layout.addStretch()
-
-        # Кнопка закрытия
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.reject)
-        layout.addWidget(close_btn)
-
-    def delete_column(self):
-        """Удаление столбца."""
-        column, ok = QInputDialog.getItem(
-            self, "Удаление столбца",
-            "Выберите столбец для удаления:",
-            [col['name'] for col in self.columns_info], 0, False
-        )
-
-        if not ok:
-            return
-
-        confirm = QMessageBox.question(
-            self, "Подтверждение",
-            f"Вы уверены, что хотите удалить столбец '{column}'?\nЭто действие необратимо!",
-            QMessageBox.Yes | QMessageBox.No
-        )
-
-        if confirm == QMessageBox.Yes:
-            success, error = self.controller.drop_column(self.table_name, column)
-            if success:
-                QMessageBox.information(self, "Успех", f"Столбец '{column}' удален")
-                self.accept()
-            else:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось удалить столбец:\n{error}")
-
-    def delete_record(self):
-        """Удаление записи."""
-        selected_items = self.data_table.selectedItems()
-        if not selected_items:
-            QMessageBox.warning(self, "Ошибка", "Выберите ячейку в записи для удаления")
-            return
-
-        confirm = QMessageBox.question(
-            self, "Подтверждение",
-            "Вы уверены, что хотите удалить эту запись?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-
-        if confirm != QMessageBox.Yes:
-            return
-
-        row = selected_items[0].row()
-
-        # Формируем WHERE условие на основе первого столбца
-        first_col_name = self.data_table.horizontalHeaderItem(0).text()
-        first_value = self.data_table.item(row, 0).text()
-
-        where_clause = f"{first_col_name} = %s"
-        success, error = self.controller.delete_row(self.table_name, where_clause, [first_value])
-
-        if success:
-            QMessageBox.information(self, "Успех", "Запись успешно удалена")
-            self.accept()
-        else:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить запись:\n{error}")
-
-
-class SortFilterDialog(QDialog):
-    """Диалог сортировки, группировки и фильтрации."""
-    def __init__(self, controller, table_name, columns_info, parent=None):
-        super().__init__(parent)
-        self.controller = controller
-        self.table_name = table_name
-        self.columns_info = columns_info
-
-        self.where_clause = None
-        self.order_clause = None
-        self.group_clause = None
-        self.having_clause = None
-
-        self.setWindowTitle("Сортировка, группировка и фильтрация")
-        self.setMinimumWidth(600)
-        self.setup_ui()
-
-    def setup_ui(self):
-        """Настройка UI."""
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("<h3>Сортировка, группировка и фильтрация</h3>"))
-
-        # WHERE условие (фильтрация)
-        filter_group = QGroupBox("Фильтрация (WHERE)")
-        filter_layout = QVBoxLayout(filter_group)
-
-        self.where_edit = QLineEdit()
-        self.where_edit.setPlaceholderText("Например: id > 5 AND name LIKE '%test%'")
-        filter_layout.addWidget(QLabel("Условие WHERE:"))
-        filter_layout.addWidget(self.where_edit)
-
-        layout.addWidget(filter_group)
-
-        # ORDER BY (сортировка)
-        sort_group = QGroupBox("Сортировка (ORDER BY)")
-        sort_layout = QVBoxLayout(sort_group)
-
-        self.order_edit = QLineEdit()
-        self.order_edit.setPlaceholderText("Например: id DESC, name ASC")
-        sort_layout.addWidget(QLabel("Условие ORDER BY:"))
-        sort_layout.addWidget(self.order_edit)
-
-        # Быстрая сортировка
-        quick_sort_layout = QHBoxLayout()
-        quick_sort_layout.addWidget(QLabel("Быстрая сортировка:"))
-
-        self.quick_sort_column = QComboBox()
-        self.quick_sort_column.addItems([col['name'] for col in self.columns_info])
-        quick_sort_layout.addWidget(self.quick_sort_column)
-
-        asc_btn = QPushButton("⬆ ASC")
-        asc_btn.clicked.connect(lambda: self.quick_sort('ASC'))
-        quick_sort_layout.addWidget(asc_btn)
-
-        desc_btn = QPushButton("⬇ DESC")
-        desc_btn.clicked.connect(lambda: self.quick_sort('DESC'))
-        quick_sort_layout.addWidget(desc_btn)
-
-        sort_layout.addLayout(quick_sort_layout)
-        layout.addWidget(sort_group)
-
-        # GROUP BY (группировка)
-        group_group = QGroupBox("Группировка (GROUP BY)")
-        group_layout = QVBoxLayout(group_group)
-
-        self.group_edit = QLineEdit()
-        self.group_edit.setPlaceholderText("Например: name")
-        group_layout.addWidget(QLabel("Условие GROUP BY:"))
-        group_layout.addWidget(self.group_edit)
-
-        # Быстрая группировка с COUNT
-        quick_group_layout = QHBoxLayout()
-        quick_group_layout.addWidget(QLabel("Быстрая группировка с COUNT:"))
-
-        self.quick_group_column = QComboBox()
-        self.quick_group_column.addItems([col['name'] for col in self.columns_info])
-        quick_group_layout.addWidget(self.quick_group_column)
-
-        group_btn = QPushButton("📊 Группировать")
-        group_btn.clicked.connect(self.quick_group)
-        quick_group_layout.addWidget(group_btn)
-
-        group_layout.addLayout(quick_group_layout)
-        layout.addWidget(group_group)
-
-        # HAVING (фильтрация групп)
-        having_group = QGroupBox("Фильтрация групп (HAVING)")
-        having_layout = QVBoxLayout(having_group)
-
-        self.having_edit = QLineEdit()
-        self.having_edit.setPlaceholderText("Например: COUNT(*) > 5")
-        having_layout.addWidget(QLabel("Условие HAVING:"))
-        having_layout.addWidget(self.having_edit)
-
-        layout.addWidget(having_group)
-
-        # Кнопки
-        buttons_layout = QHBoxLayout()
-
-        clear_btn = QPushButton("Очистить все")
-        clear_btn.clicked.connect(self.clear_all)
-        buttons_layout.addWidget(clear_btn)
-
-        buttons_layout.addStretch()
-
-        apply_btn = QPushButton("Применить")
-        apply_btn.clicked.connect(self.apply_filters)
-        buttons_layout.addWidget(apply_btn)
-
-        cancel_btn = QPushButton("Отмена")
-        cancel_btn.clicked.connect(self.reject)
-        buttons_layout.addWidget(cancel_btn)
-
-        layout.addLayout(buttons_layout)
-
-    def quick_sort(self, direction):
-        """Быстрая сортировка по выбранному столбцу."""
-        column = self.quick_sort_column.currentText()
-        self.order_edit.setText(f"{column} {direction}")
-
-    def quick_group(self):
-        """Быстрая группировка с COUNT."""
-        column = self.quick_group_column.currentText()
-        self.group_edit.setText(column)
-
-    def clear_all(self):
-        """Очистка всех полей."""
-        self.where_edit.clear()
-        self.order_edit.clear()
-        self.group_edit.clear()
-        self.having_edit.clear()
-
-    def apply_filters(self):
-        """Применение фильтров."""
-        self.where_clause = self.where_edit.text().strip() or None
-        self.order_clause = self.order_edit.text().strip() or None
-        self.group_clause = self.group_edit.text().strip() or None
-        self.having_clause = self.having_edit.text().strip() or None
-
-        self.accept()
-
-
-class DisplayDialog(QDialog):
-    """Диалог вывода данных (выбор таблицы и переименование)."""
-    def __init__(self, controller, current_table, parent=None):
-        super().__init__(parent)
-        self.controller = controller
-        self.current_table = current_table
-
-        self.setWindowTitle("Вывод данных")
-        self.setMinimumWidth(500)
-        self.setup_ui()
-
-    def setup_ui(self):
-        """Настройка UI."""
-        layout = QVBoxLayout(self)
-
-        layout.addWidget(QLabel("<h3>Управление таблицами</h3>"))
-
-        # Выбор таблицы
-        table_group = QGroupBox("Выбор таблицы")
-        table_layout = QVBoxLayout(table_group)
-
-        select_layout = QHBoxLayout()
-        select_layout.addWidget(QLabel("Таблица:"))
-
-        self.table_combo = QComboBox()
-        tables = self.controller.get_all_tables()
-        self.table_combo.addItems(tables)
-
-        if self.current_table and self.current_table in tables:
-            self.table_combo.setCurrentText(self.current_table)
-
-        select_layout.addWidget(self.table_combo)
-        table_layout.addLayout(select_layout)
-
-        layout.addWidget(table_group)
-
-        # Операции с таблицей
-        operations_group = QGroupBox("Операции с таблицей")
-        operations_layout = QVBoxLayout(operations_group)
-
-        # Переименование таблицы
-        rename_btn = QPushButton("⚙ Переименовать таблицу")
-        rename_btn.clicked.connect(self.rename_table)
-        operations_layout.addWidget(rename_btn)
-
-        layout.addWidget(operations_group)
-
-        layout.addStretch()
-
-        # Кнопки
-        buttons_layout = QHBoxLayout()
-
-        select_btn = QPushButton("Выбрать таблицу")
-        select_btn.clicked.connect(self.accept)
-        buttons_layout.addWidget(select_btn)
-
-        cancel_btn = QPushButton("Отмена")
-        cancel_btn.clicked.connect(self.reject)
-        buttons_layout.addWidget(cancel_btn)
-
-        layout.addLayout(buttons_layout)
-
-    def rename_table(self):
-        """Переименование таблицы."""
-        old_name = self.table_combo.currentText()
-        if not old_name:
-            QMessageBox.warning(self, "Ошибка", "Выберите таблицу")
-            return
-
-        new_name, ok = QInputDialog.getText(
-            self,
-            "Переименование таблицы",
-            f"Новое имя для таблицы '{old_name}':",
-            text=old_name
-        )
-
-        if ok and new_name and new_name != old_name:
-            success, error = self.controller.rename_table(old_name, new_name)
-            if success:
-                QMessageBox.information(self, "Успех", f"Таблица переименована: {old_name} → {new_name}")
-                # Обновляем список таблиц
-                tables = self.controller.get_all_tables()
-                self.table_combo.clear()
-                self.table_combo.addItems(tables)
-                self.table_combo.setCurrentText(new_name)
-                self.current_table = new_name
-            else:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось переименовать таблицу:\n{error}")
-
