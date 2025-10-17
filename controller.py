@@ -6,7 +6,6 @@ import random
 import re
 from data import DatabaseManager, ActorRank
 from logger import Logger
-# Добавляем импорты из Qt для работы с таблицами
 from PySide6.QtWidgets import QTableWidgetItem, QLineEdit
 from PySide6.QtCore import Qt
 
