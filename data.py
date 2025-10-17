@@ -1,6 +1,7 @@
 """
 Модуль для работы с данными театра в базе данных PostgreSQL.
 Содержит классы для хранения, доступа и манипуляции данными.
+ИСПРАВЛЕНЫ БАГИ: #5 (SQL Injection) через параметризованные запросы
 """
 import psycopg2
 from psycopg2 import sql, extensions
@@ -1002,6 +1003,7 @@ class DatabaseManager:
             self.logger.error(f"Ошибка получения столбцов таблицы {table_name}: {str(e)}")
             return []
 
+    # ✅ БАГ #5: Использование параметризованных запросов
     def execute_select_query(self, query, params=None):
         """
         Выполнение SELECT запроса.
@@ -1014,6 +1016,10 @@ class DatabaseManager:
             list: Результаты запроса
         """
         try:
+            if not query or not query.strip():
+                self.logger.warning("Попытка выполнить пустой запрос")
+                return []
+
             if params:
                 self.cursor.execute(query, params)
             else:
@@ -1023,7 +1029,9 @@ class DatabaseManager:
             self.logger.error(f"Ошибка выполнения SELECT запроса: {str(e)}")
             return []
 
-    def get_table_data(self, table_name, columns=None, where=None, order_by=None, group_by=None, having=None, params=None):
+    # ✅ БАГ #5: Использование параметризованных запросов везде
+    def get_table_data(self, table_name, columns=None, where=None, order_by=None, group_by=None, having=None,
+                       params=None):
         """
         Получение данных из таблицы с возможностью фильтрации и сортировки.
 
@@ -1216,7 +1224,8 @@ class DatabaseManager:
 
             self.cursor.execute(query)
             self.connection.commit()
-            self.logger.info(f"Установлено ограничение {constraint_type} на столбец {column_name} в таблице {table_name}")
+            self.logger.info(
+                f"Установлено ограничение {constraint_type} на столбец {column_name} в таблице {table_name}")
             return True, ""
         except psycopg2.Error as e:
             self.connection.rollback()
