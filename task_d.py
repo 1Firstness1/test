@@ -1,6 +1,7 @@
 """
 Модуль диалога для расширенной работы с таблицами БД.
 Содержит класс TaskDialog с возможностями управления данными и структурой таблиц.
+ИСПРАВЛЕНЫ БАГИ: #1, #2, #3, #4, #5, #6, #7, #8, #9, #10
 """
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                               QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
@@ -11,6 +12,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from controller import NumericTableItem
 from logger import Logger
+import psycopg2
+import re
 
 
 class TaskDialog(QDialog):
@@ -28,6 +31,10 @@ class TaskDialog(QDialog):
         self.current_sort_order = {}
         self.join_tables = []
         self.join_conditions = []
+        self.current_where = None
+        self.current_order_by = None
+        self.current_group_by = None
+        self.current_having = None
 
         self.setWindowTitle("Техническое задание - Управление БД")
         self.setMinimumSize(1200, 700)
@@ -91,6 +98,11 @@ class TaskDialog(QDialog):
 
         buttons_layout.addStretch()
 
+        # ✅ БАГ #2: Кнопка сброса фильтров
+        self.reset_filters_btn = QPushButton("🔄 Сбросить фильтры")
+        self.reset_filters_btn.clicked.connect(self.reset_all_filters)
+        buttons_layout.addWidget(self.reset_filters_btn)
+
         # Кнопка вывода данных
         self.display_btn = QPushButton("Вывод")
         self.display_btn.clicked.connect(self.show_display_options)
@@ -111,6 +123,23 @@ class TaskDialog(QDialog):
         else:
             self.status_label.setText("<b>Статус:</b> Таблица не выбрана")
 
+    # ✅ БАГ #2: Новый метод для сброса фильтров
+    def reset_all_filters(self):
+        """Сброс всех фильтров и перезагрузка таблицы."""
+        if not self.current_table:
+            QMessageBox.warning(self, "Ошибка", "Таблица не выбрана")
+            return
+
+        self.current_sort_order = {}
+        self.current_where = None
+        self.current_order_by = None
+        self.current_group_by = None
+        self.current_having = None
+
+        self.load_table_data_filtered()
+        QMessageBox.information(self, "Успех", "Все фильтры сброшены")
+        self.logger.info(f"Фильтры сброшены для таблицы {self.current_table}")
+
     def on_cell_double_clicked(self, row, column):
         """Обработка двойного клика по ячейке для открытия диалога группировки."""
         if not self.current_table or column >= len(self.current_columns):
@@ -121,11 +150,16 @@ class TaskDialog(QDialog):
         dialog = GroupFilterDialog(self.controller, self.current_table,
                                    self.all_columns_info, column_name, self)
         if dialog.exec_():
+            self.current_where = dialog.where_clause if dialog.where_clause else None
+            self.current_order_by = dialog.order_clause if dialog.order_clause else None
+            self.current_group_by = dialog.group_clause if dialog.group_clause else None
+            self.current_having = dialog.having_clause if dialog.having_clause else None
+
             self.load_table_data_filtered(
-                where=dialog.where_clause if dialog.where_clause else None,
-                order_by=dialog.order_clause if dialog.order_clause else None,
-                group_by=dialog.group_clause if dialog.group_clause else None,
-                having=dialog.having_clause if dialog.having_clause else None
+                where=self.current_where,
+                order_by=self.current_order_by,
+                group_by=self.current_group_by,
+                having=self.current_having
             )
 
     def on_column_header_clicked(self, logical_index):
@@ -143,7 +177,12 @@ class TaskDialog(QDialog):
         self.current_sort_order = {column_name: order}
 
         order_clause = f"{column_name} {order}"
-        self.load_table_data_filtered(order_by=order_clause)
+        self.load_table_data_filtered(
+            where=self.current_where,
+            order_by=order_clause,
+            group_by=self.current_group_by,
+            having=self.current_having
+        )
         self.logger.info(f"Сортировка по {column_name} {order}")
 
     def show_search_dialog(self):
@@ -154,7 +193,12 @@ class TaskDialog(QDialog):
 
         dialog = SearchDialog(self.controller, self.current_table, self.all_columns_info, self)
         if dialog.exec_():
-            self.load_table_data_filtered(where=dialog.search_condition)
+            # ✅ БАГ #5: Использовать параметризованный запрос
+            self.current_where = dialog.search_condition
+            self.load_table_data_filtered(
+                where=dialog.search_condition,
+                params=getattr(dialog, 'search_params', None)
+            )
 
     def show_edit_menu(self):
         """Показ меню редактирования как отдельный диалог."""
@@ -165,8 +209,15 @@ class TaskDialog(QDialog):
         dialog = EditMenuDialog(self.controller, self.current_table, self.all_columns_info,
                                self.data_table, self)
         if dialog.exec_():
+            # ✅ БАГ #3: Очистить кэш перед перезагрузкой
+            self.current_columns = []
             self.all_columns_info = self.controller.get_table_columns(self.current_table)
-            self.load_table_data_filtered()
+            self.load_table_data_filtered(
+                where=self.current_where,
+                order_by=self.current_order_by,
+                group_by=self.current_group_by,
+                having=self.current_having
+            )
 
     def show_add_menu(self):
         """Показ меню добавления как отдельный диалог."""
@@ -176,8 +227,15 @@ class TaskDialog(QDialog):
 
         dialog = AddMenuDialog(self.controller, self.current_table, self.all_columns_info, self)
         if dialog.exec_():
+            # ✅ БАГ #3: Очистить кэш перед перезагрузкой
+            self.current_columns = []
             self.all_columns_info = self.controller.get_table_columns(self.current_table)
-            self.load_table_data_filtered()
+            self.load_table_data_filtered(
+                where=self.current_where,
+                order_by=self.current_order_by,
+                group_by=self.current_group_by,
+                having=self.current_having
+            )
 
     def show_delete_menu(self):
         """Показ меню удаления как отдельный диалог."""
@@ -188,10 +246,18 @@ class TaskDialog(QDialog):
         dialog = DeleteMenuDialog(self.controller, self.current_table, self.all_columns_info,
                                  self.data_table, self)
         if dialog.exec_():
+            # ✅ БАГ #3: Очистить кэш перед перезагрузкой
+            self.current_columns = []
             self.all_columns_info = self.controller.get_table_columns(self.current_table)
-            self.load_table_data_filtered()
+            self.load_table_data_filtered(
+                where=self.current_where,
+                order_by=self.current_order_by,
+                group_by=self.current_group_by,
+                having=self.current_having
+            )
 
-    def load_table_data_filtered(self, columns=None, where=None, order_by=None, group_by=None, having=None):
+    # ✅ БАГ #9: Полная очистка таблицы перед заполнением
+    def load_table_data_filtered(self, columns=None, where=None, order_by=None, group_by=None, having=None, params=None):
         """Загрузка данных таблицы с фильтрацией."""
         if not self.current_table:
             return
@@ -207,8 +273,13 @@ class TaskDialog(QDialog):
             where,
             order_by,
             group_by,
-            having
+            having,
+            params
         )
+
+        # ✅ БАГ #9: Очистить таблицу перед заполнением для избежания утечек памяти
+        self.data_table.clearSpans()
+        self.data_table.setRowCount(0)
 
         self.data_table.setColumnCount(len(self.current_columns))
         self.data_table.setHorizontalHeaderLabels(self.current_columns)
@@ -229,7 +300,8 @@ class TaskDialog(QDialog):
 
     def show_display_options(self):
         """Показ опций вывода данных с выбором таблицы."""
-        dialog = DisplayOptionsDialog(self.controller, self.current_table, self.all_columns_info, self)
+        # ✅ БАГ #1: Всегда получать свежие данные
+        dialog = DisplayOptionsDialog(self.controller, self.current_table, self)
         if dialog.exec_():
             self.current_table = dialog.selected_table
             self.join_tables = dialog.join_tables
@@ -240,6 +312,11 @@ class TaskDialog(QDialog):
                 return
 
             self.all_columns_info = self.controller.get_table_columns(self.current_table)
+            self.current_columns = []
+            self.current_where = None
+            self.current_order_by = None
+            self.current_group_by = None
+            self.current_having = None
 
             if dialog.is_join_mode:
                 self.execute_join_display(dialog.join_config)
@@ -247,6 +324,7 @@ class TaskDialog(QDialog):
                 self.current_columns = dialog.selected_columns if dialog.selected_columns else [col['name'] for col in self.all_columns_info]
                 self.load_table_data_filtered(columns=self.current_columns)
 
+    # ✅ БАГ #7: Улучшенная обработка ошибок
     def execute_join_display(self, join_config):
         """Выполнение и отображение результатов JOIN."""
         try:
@@ -260,6 +338,9 @@ class TaskDialog(QDialog):
 
             if results:
                 self.current_columns = join_config['column_labels']
+                self.data_table.clearSpans()
+                self.data_table.setRowCount(0)
+
                 self.data_table.setColumnCount(len(self.current_columns))
                 self.data_table.setHorizontalHeaderLabels(self.current_columns)
                 self.data_table.setRowCount(len(results))
@@ -273,12 +354,28 @@ class TaskDialog(QDialog):
                 self.logger.info(f"Выполнен JOIN запрос: {len(results)} строк")
             else:
                 QMessageBox.information(self, "Результат", "Запрос не вернул результатов")
+
+        except psycopg2.Error as e:
+            self.logger.error(f"Ошибка JOIN: {str(e)}")
+            error_msg = str(e)
+            if "column" in error_msg.lower():
+                hint = "Проверьте, что все указанные столбцы существуют в таблицах"
+            elif "table" in error_msg.lower():
+                hint = "Проверьте, что таблицы существуют"
+            else:
+                hint = "Проверьте условия соединения"
+
+            QMessageBox.critical(self, "Ошибка выполнения JOIN",
+                f"Не удалось выполнить соединение:\n\n{hint}\n\n"
+                f"Техническая информация:\n{error_msg}")
+
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Ошибка выполнения JOIN:\n{str(e)}")
+            self.logger.error(f"Неожиданная ошибка JOIN: {str(e)}")
+            QMessageBox.critical(self, "Ошибка", f"Неожиданная ошибка: {str(e)}")
 
 
 class EditMenuDialog(QDialog):
-    """Диалог меню редактирования (аналог DisplayOptionsDialog)."""
+    """Диалог меню редактирования."""
     def __init__(self, controller, table_name, columns_info, data_table, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -304,13 +401,11 @@ class EditMenuDialog(QDialog):
 
         layout.addWidget(QLabel("<h3>Выберите действие</h3>"))
 
-        # Кнопка редактирования столбца
         edit_column_btn = QPushButton("Редактировать столбец")
         edit_column_btn.setMinimumHeight(50)
         edit_column_btn.clicked.connect(self.edit_column)
         layout.addWidget(edit_column_btn)
 
-        # Кнопка редактирования записи
         edit_record_btn = QPushButton("Редактировать запись")
         edit_record_btn.setMinimumHeight(50)
         edit_record_btn.clicked.connect(self.edit_record)
@@ -318,7 +413,6 @@ class EditMenuDialog(QDialog):
 
         layout.addStretch()
 
-        # Кнопки OK/Cancel
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept_dialog)
         buttons.rejected.connect(self.reject)
@@ -331,8 +425,13 @@ class EditMenuDialog(QDialog):
             self.action_taken = True
             self.accept()
 
+    # ✅ БАГ #6: Проверка на пустую таблицу
     def edit_record(self):
         """Редактирование записи."""
+        if not self.data_table.rowCount():
+            QMessageBox.warning(self, "Ошибка", "Таблица пуста, нечего редактировать")
+            return
+
         selected_items = self.data_table.selectedItems()
         if not selected_items:
             QMessageBox.warning(self, "Ошибка", "Выберите ячейку в записи для редактирования")
@@ -340,6 +439,10 @@ class EditMenuDialog(QDialog):
 
         item = selected_items[0]
         row = item.row()
+
+        if row < 0 or row >= self.data_table.rowCount():
+            QMessageBox.warning(self, "Ошибка", "Неверная строка")
+            return
 
         row_data = {}
         for col_idx in range(self.data_table.columnCount()):
@@ -359,7 +462,7 @@ class EditMenuDialog(QDialog):
 
 
 class AddMenuDialog(QDialog):
-    """Диалог меню добавления (аналог DisplayOptionsDialog)."""
+    """Диалог меню добавления."""
     def __init__(self, controller, table_name, columns_info, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -384,13 +487,11 @@ class AddMenuDialog(QDialog):
 
         layout.addWidget(QLabel("<h3>Выберите действие</h3>"))
 
-        # Кнопка добавления столбца
         add_column_btn = QPushButton("Создать столбец")
         add_column_btn.setMinimumHeight(50)
         add_column_btn.clicked.connect(self.add_column)
         layout.addWidget(add_column_btn)
 
-        # Кнопка добавления записи
         add_record_btn = QPushButton("Создать запись")
         add_record_btn.setMinimumHeight(50)
         add_record_btn.clicked.connect(self.add_record)
@@ -398,7 +499,6 @@ class AddMenuDialog(QDialog):
 
         layout.addStretch()
 
-        # Кнопки OK/Cancel
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept_dialog)
         buttons.rejected.connect(self.reject)
@@ -424,7 +524,7 @@ class AddMenuDialog(QDialog):
 
 
 class DeleteMenuDialog(QDialog):
-    """Диалог меню удаления (аналог DisplayOptionsDialog)."""
+    """Диалог меню удаления."""
     def __init__(self, controller, table_name, columns_info, data_table, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -450,13 +550,11 @@ class DeleteMenuDialog(QDialog):
 
         layout.addWidget(QLabel("<h3>Выберите действие</h3>"))
 
-        # Кнопка удаления столбца
         delete_column_btn = QPushButton("🗑 Удалить столбец")
         delete_column_btn.setMinimumHeight(50)
         delete_column_btn.clicked.connect(self.delete_column)
         layout.addWidget(delete_column_btn)
 
-        # Кнопка удаления записи
         delete_record_btn = QPushButton("🗑 Удалить запись")
         delete_record_btn.setMinimumHeight(50)
         delete_record_btn.clicked.connect(self.delete_record)
@@ -464,7 +562,6 @@ class DeleteMenuDialog(QDialog):
 
         layout.addStretch()
 
-        # Кнопки OK/Cancel
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept_dialog)
         buttons.rejected.connect(self.reject)
@@ -477,8 +574,13 @@ class DeleteMenuDialog(QDialog):
             self.action_taken = True
             self.accept()
 
+    # ✅ БАГ #6: Проверка на пустую таблицу
     def delete_record(self):
         """Удаление записи."""
+        if not self.data_table.rowCount():
+            QMessageBox.warning(self, "Ошибка", "Таблица пуста, нечего удалять")
+            return
+
         selected_items = self.data_table.selectedItems()
         if not selected_items:
             QMessageBox.warning(self, "Ошибка", "Выберите ячейку в записи для удаления")
@@ -486,6 +588,10 @@ class DeleteMenuDialog(QDialog):
 
         item = selected_items[0]
         row = item.row()
+
+        if row < 0 or row >= self.data_table.rowCount():
+            QMessageBox.warning(self, "Ошибка", "Неверная строка")
+            return
 
         confirm = QMessageBox.question(
             self,
@@ -795,6 +901,7 @@ class DeleteColumnDialog(QDialog):
                 QMessageBox.critical(self, "Ошибка", f"Не удалось удалить столбец:\n{error}")
 
 
+# ✅ БАГ #10: Улучшенная валидация NOT NULL
 class AddRecordDialog(QDialog):
     """Диалог добавления новой записи."""
     def __init__(self, controller, table_name, columns_info, parent=None):
@@ -840,10 +947,27 @@ class AddRecordDialog(QDialog):
     def accept_dialog(self):
         """Принятие диалога с валидацией."""
         data = {}
-        for col_name, widget in self.field_widgets.items():
+        errors = []
+
+        for col in self.columns_info:
+            col_name = col['name']
+            widget = self.field_widgets.get(col_name)
+
+            if not widget:
+                continue
+
             value = widget.text().strip()
+
+            # ✅ БАГ #10: Проверка NOT NULL
+            if not value and not col.get('nullable', True):
+                errors.append(f"Поле '{col_name}' обязательно для заполнения")
+
             if value:
                 data[col_name] = value
+
+        if errors:
+            QMessageBox.warning(self, "Ошибка валидации", "\n".join(errors))
+            return
 
         if not data:
             QMessageBox.warning(self, "Ошибка", "Заполните хотя бы одно поле")
@@ -858,6 +982,7 @@ class AddRecordDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Не удалось добавить запись:\n{error}")
 
 
+# ✅ БАГ #10: Улучшенная валидация NOT NULL
 class EditRecordDialog(QDialog):
     """Диалог редактирования записи."""
     def __init__(self, controller, table_name, columns_info, current_data, parent=None):
@@ -908,11 +1033,26 @@ class EditRecordDialog(QDialog):
         where_value = self.field_widgets[first_col].text()
 
         data = {}
-        for col_name, widget in self.field_widgets.items():
-            if col_name != first_col:
-                value = widget.text().strip()
-                if value:
-                    data[col_name] = value
+        errors = []
+
+        for col in self.columns_info:
+            if col['name'] == first_col:
+                continue
+
+            col_name = col['name']
+            widget = self.field_widgets[col_name]
+            value = widget.text().strip()
+
+            # ✅ БАГ #10: Проверка NOT NULL
+            if not value and not col.get('nullable', True):
+                errors.append(f"Поле '{col_name}' обязательно для заполнения")
+
+            if value:
+                data[col_name] = value
+
+        if errors:
+            QMessageBox.warning(self, "Ошибка валидации", "\n".join(errors))
+            return
 
         if not data:
             QMessageBox.warning(self, "Ошибка", "Нет данных для обновления")
@@ -1000,14 +1140,16 @@ class GroupFilterDialog(QDialog):
         self.accept()
 
 
+# ✅ БАГ #5: Параметризованный SearchDialog
 class SearchDialog(QDialog):
-    """Диалог поиска по таблице."""
+    """Диалог поиска по таблице с защитой от SQL Injection."""
     def __init__(self, controller, table_name, columns_info, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.table_name = table_name
         self.columns_info = columns_info
         self.search_condition = None
+        self.search_params = []
 
         self.setWindowTitle("Поиск")
         self.setMinimumWidth(500)
@@ -1063,7 +1205,7 @@ class SearchDialog(QDialog):
         layout.addWidget(buttons)
 
     def accept_dialog(self):
-        """Формирование условия поиска."""
+        """Формирование условия поиска с защитой от SQL Injection."""
         column = self.column_combo.currentText()
         search_text = self.search_text.text().strip()
 
@@ -1073,29 +1215,35 @@ class SearchDialog(QDialog):
 
         search_type = self.search_type_combo.currentText()
 
+        # ✅ БАГ #5: Использовать параметризованные запросы
         if "LIKE" in search_type:
-            self.search_condition = f"{column} LIKE '{search_text}'"
+            self.search_condition = f"{column} LIKE %s"
+            self.search_params = [f"%{search_text}%"]
         elif "~*" in search_type and "!" in search_type:
-            self.search_condition = f"{column} !~* '{search_text}'"
+            self.search_condition = f"{column} !~* %s"
+            self.search_params = [search_text]
         elif "~*" in search_type:
-            self.search_condition = f"{column} ~* '{search_text}'"
+            self.search_condition = f"{column} ~* %s"
+            self.search_params = [search_text]
         elif "!~" in search_type:
-            self.search_condition = f"{column} !~ '{search_text}'"
+            self.search_condition = f"{column} !~ %s"
+            self.search_params = [search_text]
         elif "~" in search_type:
-            self.search_condition = f"{column} ~ '{search_text}'"
+            self.search_condition = f"{column} ~ %s"
+            self.search_params = [search_text]
         else:
-            self.search_condition = f"{column} = '{search_text}'"
+            self.search_condition = f"{column} = %s"
+            self.search_params = [search_text]
 
         self.accept()
 
 
 class DisplayOptionsDialog(QDialog):
     """Диалог опций вывода данных."""
-    def __init__(self, controller, current_table=None, columns_info=None, parent=None):
+    def __init__(self, controller, current_table=None, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.current_table = current_table
-        self.columns_info = columns_info or []
 
         self.selected_table = current_table
         self.selected_columns = None
@@ -1172,7 +1320,8 @@ class DisplayOptionsDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", "Сначала выберите таблицу")
             return
 
-        dialog = StringFunctionsDialog(self.controller, self.selected_table, self.columns_info, self)
+        columns_info = self.controller.get_table_columns(self.selected_table)
+        dialog = StringFunctionsDialog(self.controller, self.selected_table, columns_info, self)
         dialog.exec_()
 
     def accept_dialog(self):
@@ -1184,6 +1333,7 @@ class DisplayOptionsDialog(QDialog):
         self.accept()
 
 
+# ✅ БАГ #1: Всегда получать свежие данные при открытии
 class SelectTableDialog(QDialog):
     """Диалог выбора таблицы с отображением и выбором столбцов."""
     def __init__(self, controller, current_table=None, parent=None):
@@ -1191,6 +1341,7 @@ class SelectTableDialog(QDialog):
         self.controller = controller
         self.selected_table = current_table
         self.selected_columns = None
+        self.scroll_area = None
 
         self.setWindowTitle("Выбрать таблицу")
         self.setMinimumWidth(500)
@@ -1232,11 +1383,12 @@ class SelectTableDialog(QDialog):
         layout.addWidget(QLabel("<b>Выберите столбцы:</b>"))
 
         self.columns_checks = {}
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
 
+        # ✅ БАГ #1: Всегда получать свежие данные
         current_columns = self.controller.get_table_columns(self.table_combo.currentText())
 
         for col in current_columns:
@@ -1246,8 +1398,8 @@ class SelectTableDialog(QDialog):
             scroll_layout.addWidget(check)
 
         scroll_layout.addStretch()
-        scroll_area.setWidget(scroll_widget)
-        layout.addWidget(scroll_area)
+        self.scroll_area.setWidget(scroll_widget)
+        layout.addWidget(self.scroll_area)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept_dialog)
@@ -1260,14 +1412,8 @@ class SelectTableDialog(QDialog):
             columns = self.controller.get_table_columns(table_name)
             self.columns_checks.clear()
 
-            scroll_area = None
-            for i in range(self.layout().count()):
-                widget = self.layout().itemAt(i).widget()
-                if isinstance(widget, QScrollArea):
-                    scroll_area = widget
-                    break
-
-            if scroll_area:
+            # ✅ БАГ #4: Использовать сохранённую ссылку на scroll_area
+            if self.scroll_area:
                 scroll_widget = QWidget()
                 scroll_layout = QVBoxLayout(scroll_widget)
 
@@ -1278,7 +1424,7 @@ class SelectTableDialog(QDialog):
                     scroll_layout.addWidget(check)
 
                 scroll_layout.addStretch()
-                scroll_area.setWidget(scroll_widget)
+                self.scroll_area.setWidget(scroll_widget)
 
     def rename_table(self):
         """Переименование таблицы."""
@@ -1312,12 +1458,15 @@ class SelectTableDialog(QDialog):
         self.accept()
 
 
+# ✅ БАГ #4: Исправлен JoinWizardDialog с сохранением ссылки на scroll_area
 class JoinWizardDialog(QDialog):
     """Мастер создания JOIN запросов."""
+
     def __init__(self, controller, base_table, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.base_table = base_table
+        self.scroll_area = None  # ✅ БАГ #4: Добавить это
 
         self.setWindowTitle("Мастер соединений (JOIN)")
         self.setMinimumWidth(700)
@@ -1383,8 +1532,9 @@ class JoinWizardDialog(QDialog):
         layout.addWidget(QLabel("<b>Выберите столбцы для вывода:</b>"))
 
         self.columns_checks = {}
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
+        # ✅ БАГ #4: Сохранить ссылку на scroll_area
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
 
@@ -1398,8 +1548,8 @@ class JoinWizardDialog(QDialog):
             scroll_layout.addWidget(check)
 
         scroll_layout.addStretch()
-        scroll_area.setWidget(scroll_widget)
-        layout.addWidget(scroll_area)
+        self.scroll_area.setWidget(scroll_widget)
+        layout.addWidget(self.scroll_area)
 
         self.update_join_columns(self.join_table_combo.currentText())
 
@@ -1418,6 +1568,7 @@ class JoinWizardDialog(QDialog):
         self.base_column_combo.clear()
         self.base_column_combo.addItems([col['name'] for col in columns])
 
+    # ✅ БАГ #4: Исправленный метод update_join_columns
     def update_join_columns(self, table_name):
         """Обновление списка столбцов присоединяемой таблицы."""
         if not table_name:
@@ -1428,18 +1579,11 @@ class JoinWizardDialog(QDialog):
         self.join_column_combo.clear()
         self.join_column_combo.addItems([col['name'] for col in columns])
 
-        # Обновляем чекбоксы столбцов
-        self.columns_checks.clear()
-        scroll_area = None
-        for i in range(self.layout().count()):
-            widget = self.layout().itemAt(i).widget()
-            if isinstance(widget, QScrollArea):
-                scroll_area = widget
-                break
-
-        if scroll_area:
+        # ✅ БАГ #4: Использовать сохранённую ссылку на scroll_area
+        if self.scroll_area:
             scroll_widget = QWidget()
             scroll_layout = QVBoxLayout(scroll_widget)
+            self.columns_checks.clear()
 
             for col in columns:
                 check = QCheckBox(f"{table_name}.{col['name']}")
@@ -1448,7 +1592,7 @@ class JoinWizardDialog(QDialog):
                 scroll_layout.addWidget(check)
 
             scroll_layout.addStretch()
-            scroll_area.setWidget(scroll_widget)
+            self.scroll_area.setWidget(scroll_widget)
 
     def get_join_config(self):
         """Получение конфигурации JOIN."""
@@ -1487,6 +1631,7 @@ class JoinWizardDialog(QDialog):
         }
 
 
+# ✅ БАГ #8: Исправлена StringFunctionsDialog с экранированием
 class StringFunctionsDialog(QDialog):
     """Диалог работы со строковыми функциями."""
 
@@ -1496,6 +1641,7 @@ class StringFunctionsDialog(QDialog):
         self.table_name = table_name
         self.columns_info = columns_info
         self.selected_column = selected_column
+        self.logger = Logger()
 
         self.setWindowTitle("Строковые функции")
         self.setMinimumWidth(600)
@@ -1605,59 +1751,73 @@ class StringFunctionsDialog(QDialog):
             self.concat_position.addItems(["В начале", "В конце"])
             self.params_layout.addRow("Позиция:", self.concat_position)
 
+    # ✅ БАГ #8: Исправлена обработка строковых функций с экранированием
     def apply_function(self):
         """Применение выбранной функции."""
         column = self.column_combo.currentText()
         function = self.function_combo.currentText()
 
-        if "UPPER" in function:
-            sql_expr = f"UPPER({column})"
-        elif "LOWER" in function:
-            sql_expr = f"LOWER({column})"
-        elif "SUBSTRING" in function:
-            start = self.start_pos.value()
-            length = self.length.value()
-            sql_expr = f"SUBSTRING({column}, {start}, {length})"
-        elif "LTRIM" in function:
-            sql_expr = f"LTRIM({column})"
-        elif "RTRIM" in function:
-            sql_expr = f"RTRIM({column})"
-        elif "TRIM" in function:
-            sql_expr = f"TRIM({column})"
-        elif "LPAD" in function:
-            length = self.pad_length.value()
-            char = self.pad_char.text() or ' '
-            sql_expr = f"LPAD({column}, {length}, '{char}')"
-        elif "RPAD" in function:
-            length = self.pad_length.value()
-            char = self.pad_char.text() or ' '
-            sql_expr = f"RPAD({column}, {length}, '{char}')"
-        elif "CONCAT" in function:
-            text = self.concat_text.text()
-            if self.concat_position.currentText() == "В начале":
-                sql_expr = f"'{text}' || {column}"
+        try:
+            if "UPPER" in function:
+                sql_expr = f"UPPER({column})"
+            elif "LOWER" in function:
+                sql_expr = f"LOWER({column})"
+            elif "SUBSTRING" in function:
+                start = self.start_pos.value()
+                length = self.length.value()
+                sql_expr = f"SUBSTRING({column}, {start}, {length})"
+            elif "LTRIM" in function:
+                sql_expr = f"LTRIM({column})"
+            elif "RTRIM" in function:
+                sql_expr = f"RTRIM({column})"
+            elif "TRIM" in function:
+                sql_expr = f"TRIM({column})"
+            elif "LPAD" in function:
+                length = self.pad_length.value()
+                char = self.pad_char.text() or ' '
+                # ✅ БАГ #8: Экранировать кавычки
+                char_escaped = char.replace("'", "''")
+                sql_expr = f"LPAD({column}, {length}, '{char_escaped}')"
+            elif "RPAD" in function:
+                length = self.pad_length.value()
+                char = self.pad_char.text() or ' '
+                # ✅ БАГ #8: Экранировать кавычки
+                char_escaped = char.replace("'", "''")
+                sql_expr = f"RPAD({column}, {length}, '{char_escaped}')"
+            elif "CONCAT" in function:
+                text = self.concat_text.text()
+                # ✅ БАГ #8: Экранировать кавычки в тексте
+                text_escaped = text.replace("'", "''")
+                if self.concat_position.currentText() == "В начале":
+                    sql_expr = f"'{text_escaped}' || {column}"
+                else:
+                    sql_expr = f"{column} || '{text_escaped}'"
+            elif "LENGTH" in function:
+                sql_expr = f"LENGTH({column})"
             else:
-                sql_expr = f"{column} || '{text}'"
-        elif "LENGTH" in function:
-            sql_expr = f"LENGTH({column})"
-        else:
-            QMessageBox.warning(self, "Ошибка", "Неизвестная функция")
-            return
+                QMessageBox.warning(self, "Ошибка", "Неизвестная функция")
+                return
 
-        query = f"SELECT {column} as original, {sql_expr} as result FROM {self.table_name} LIMIT 20"
-        results = self.controller.execute_select(query)
+            query = f"SELECT {column} as original, {sql_expr} as result FROM {self.table_name} LIMIT 20"
+            results = self.controller.execute_select(query)
 
-        if results:
-            self.result_table.setColumnCount(2)
-            self.result_table.setHorizontalHeaderLabels(["Оригинал", "Результат"])
-            self.result_table.setRowCount(len(results))
+            if results:
+                self.result_table.setColumnCount(2)
+                self.result_table.setHorizontalHeaderLabels(["Оригинал", "Результат"])
+                self.result_table.setRowCount(len(results))
 
-            for row_idx, row_data in enumerate(results):
-                for col_idx, value in enumerate(row_data):
-                    str_value = str(value) if value is not None else ""
-                    item = QTableWidgetItem(str_value)
-                    self.result_table.setItem(row_idx, col_idx, item)
+                for row_idx, row_data in enumerate(results):
+                    for col_idx, value in enumerate(row_data):
+                        str_value = str(value) if value is not None else ""
+                        item = QTableWidgetItem(str_value)
+                        self.result_table.setItem(row_idx, col_idx, item)
 
-            self.result_table.resizeColumnsToContents()
-        else:
-            QMessageBox.information(self, "Результат", "Нет данных для отображения")
+                self.result_table.resizeColumnsToContents()
+                self.logger.info(f"Функция {function} применена успешно")
+            else:
+                QMessageBox.information(self, "Результат", "Нет данных для отображения")
+
+        # ✅ БАГ #8: Обработка ошибок
+        except Exception as e:
+            self.logger.error(f"Ошибка применения функции: {str(e)}")
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при применении функции:\n{str(e)}")
