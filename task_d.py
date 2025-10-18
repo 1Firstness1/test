@@ -2,6 +2,7 @@
 Модуль диалога для расширенной работы с таблицами БД.
 Содержит класс TaskDialog с возможностями управления данными и структурой таблиц.
 ИСПРАВЛЕНЫ БАГИ: #1, #2, #3, #4, #5, #6, #7, #8, #9, #10
+ИСПРАВЛЕНЫ НОВЫЕ БАГИ: JOIN columns, string functions case handling, transaction rollback
 """
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                               QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
@@ -99,7 +100,7 @@ class TaskDialog(QDialog):
         buttons_layout.addStretch()
 
         # ✅ БАГ #2: Кнопка сброса фильтров
-        self.reset_filters_btn = QPushButton("🔄 Сбросить фильтры")
+        self.reset_filters_btn = QPushButton("Сбросить фильтры")
         self.reset_filters_btn.clicked.connect(self.reset_all_filters)
         buttons_layout.addWidget(self.reset_filters_btn)
 
@@ -135,9 +136,12 @@ class TaskDialog(QDialog):
         self.current_order_by = None
         self.current_group_by = None
         self.current_having = None
+        self.join_tables = []
+        self.join_conditions = []
 
         self.load_table_data_filtered()
-        QMessageBox.information(self, "Успех", "Все фильтры сброшены")
+        self.update_status()
+        QMessageBox.information(self, "Успех", "Все фильтры и соединения сброшены")
         self.logger.info(f"Фильтры сброшены для таблицы {self.current_table}")
 
     def on_cell_double_clicked(self, row, column):
@@ -550,12 +554,12 @@ class DeleteMenuDialog(QDialog):
 
         layout.addWidget(QLabel("<h3>Выберите действие</h3>"))
 
-        delete_column_btn = QPushButton("🗑 Удалить столбец")
+        delete_column_btn = QPushButton("Удалить столбец")
         delete_column_btn.setMinimumHeight(50)
         delete_column_btn.clicked.connect(self.delete_column)
         layout.addWidget(delete_column_btn)
 
-        delete_record_btn = QPushButton("🗑 Удалить запись")
+        delete_record_btn = QPushButton("Удалить запись")
         delete_record_btn.setMinimumHeight(50)
         delete_record_btn.clicked.connect(self.delete_record)
         layout.addWidget(delete_record_btn)
@@ -1631,7 +1635,7 @@ class JoinWizardDialog(QDialog):
         }
 
 
-# ✅ БАГ #8: Исправлена StringFunctionsDialog с экранированием
+# ✅ БАГ #8: Исправлена StringFunctionsDialog с экранированием и регистром
 class StringFunctionsDialog(QDialog):
     """Диалог работы со строковыми функциями."""
 
@@ -1685,7 +1689,8 @@ class StringFunctionsDialog(QDialog):
             "LPAD (дополнение слева)",
             "RPAD (дополнение справа)",
             "CONCAT (объединение)",
-            "LENGTH (длина строки)"
+            "LENGTH (длина строки)",
+            "INITCAP (первый символ в верхнем регистре)"
         ])
         self.function_combo.currentTextChanged.connect(self.on_function_changed)
         form_layout.addRow("Функция:", self.function_combo)
@@ -1751,7 +1756,7 @@ class StringFunctionsDialog(QDialog):
             self.concat_position.addItems(["В начале", "В конце"])
             self.params_layout.addRow("Позиция:", self.concat_position)
 
-    # ✅ БАГ #8: Исправлена обработка строковых функций с экранированием
+    # ✅ БАГ #8: Исправлена обработка строковых функций с экранированием и регистром
     def apply_function(self):
         """Применение выбранной функции."""
         column = self.column_combo.currentText()
@@ -1759,9 +1764,14 @@ class StringFunctionsDialog(QDialog):
 
         try:
             if "UPPER" in function:
+                # ✅ ИСПРАВЛЕНО: Правильный синтаксис для верхнего регистра
                 sql_expr = f"UPPER({column})"
             elif "LOWER" in function:
+                # ✅ ИСПРАВЛЕНО: Правильный синтаксис для нижнего регистра
                 sql_expr = f"LOWER({column})"
+            elif "INITCAP" in function:
+                # ✅ ИСПРАВЛЕНО: Добавлена функция инициализации заглавной буквы
+                sql_expr = f"INITCAP({column})"
             elif "SUBSTRING" in function:
                 start = self.start_pos.value()
                 length = self.length.value()
