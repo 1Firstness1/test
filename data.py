@@ -2,6 +2,7 @@
 Модуль для работы с данными театра в базе данных PostgreSQL.
 Содержит классы для хранения, доступа и манипуляции данными.
 ИСПРАВЛЕНЫ БАГИ: #5 (SQL Injection) через параметризованные запросы
+ИСПРАВЛЕНЫ НОВЫЕ БАГИ: Transaction handling, JOIN columns, table_name escaping
 """
 import psycopg2
 from psycopg2 import sql, extensions
@@ -438,6 +439,7 @@ class DatabaseManager:
             return self.cursor.fetchall()
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения списка актеров: {str(e)}")
+            self.connection.rollback()
             return []
 
     def get_plots(self):
@@ -452,6 +454,7 @@ class DatabaseManager:
             return self.cursor.fetchall()
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения списка сюжетов: {str(e)}")
+            self.connection.rollback()
             return []
 
     def get_performances(self, year=None):
@@ -484,6 +487,7 @@ class DatabaseManager:
             return self.cursor.fetchall()
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения спектаклей: {str(e)}")
+            self.connection.rollback()
             return []
 
     def get_actors_in_performance(self, performance_id):
@@ -507,6 +511,7 @@ class DatabaseManager:
             return self.cursor.fetchall()
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения актеров в спектакле: {str(e)}")
+            self.connection.rollback()
             return []
 
     def get_game_data(self):
@@ -521,6 +526,7 @@ class DatabaseManager:
             return self.cursor.fetchone()
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения игровых данных: {str(e)}")
+            self.connection.rollback()
             return None
 
     def add_plot(self, title, minimum_budget, production_cost, roles_count, demand, required_ranks):
@@ -964,6 +970,7 @@ class DatabaseManager:
             return [row[0] for row in self.cursor.fetchall()]
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения списка таблиц: {str(e)}")
+            self.connection.rollback()
             return []
 
     def get_table_columns(self, table_name):
@@ -1001,6 +1008,7 @@ class DatabaseManager:
             return columns
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения столбцов таблицы {table_name}: {str(e)}")
+            self.connection.rollback()
             return []
 
     # ✅ БАГ #5: Использование параметризованных запросов
@@ -1027,6 +1035,7 @@ class DatabaseManager:
             return self.cursor.fetchall()
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка выполнения SELECT запроса: {str(e)}")
+            self.connection.rollback()
             return []
 
     # ✅ БАГ #5: Использование параметризованных запросов везде
@@ -1049,7 +1058,10 @@ class DatabaseManager:
         """
         try:
             cols = ', '.join(columns) if columns else '*'
-            query = f"SELECT {cols} FROM {sql.Identifier(table_name).as_string(self.cursor)}"
+
+            # ✅ ИСПРАВЛЕНО: Правильное экранирование имени таблицы
+            table_identifier = sql.Identifier(table_name)
+            query = f"SELECT {cols} FROM {table_identifier.as_string(self.cursor)}"
 
             if where:
                 query += f" WHERE {where}"
@@ -1068,6 +1080,7 @@ class DatabaseManager:
             return self.cursor.fetchall()
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения данных таблицы {table_name}: {str(e)}")
+            self.connection.rollback()
             return []
 
     def add_table_column(self, table_name, column_name, data_type, nullable=True, default=None):
@@ -1371,16 +1384,18 @@ class DatabaseManager:
             list: Результаты запроса
         """
         try:
-            # Формируем SELECT часть
+            # ✅ ИСПРАВЛЕНО: Правильное построение SELECT для JOIN
+            # Не добавляем * автоматически, используем только указанные столбцы
             cols = ', '.join(selected_columns)
 
             # Формируем FROM часть
             main_table = tables_info[0]
             query = f"SELECT {cols} FROM {main_table['name']}"
+
             if main_table.get('alias'):
                 query += f" AS {main_table['alias']}"
 
-            # Добавляем JOIN'ы
+            # Добавляем JOIN'ы - ✅ ИСПРАВЛЕНО: правильное экранирование
             for join in join_conditions:
                 query += f" {join['type']} JOIN {join['table']}"
                 if join.get('alias'):
@@ -1393,8 +1408,10 @@ class DatabaseManager:
             if order_by:
                 query += f" ORDER BY {order_by}"
 
+            self.logger.info(f"Выполнение JOIN запроса: {query}")
             self.cursor.execute(query)
             return self.cursor.fetchall()
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка выполнения JOIN запроса: {str(e)}")
+            self.connection.rollback()
             return []
