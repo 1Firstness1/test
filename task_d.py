@@ -1,14 +1,15 @@
 """
 Модуль диалога для расширенной работы с таблицами БД.
 Содержит класс TaskDialog с возможностями управления данными и структурой таблиц.
-ИСПРАВЛЕНЫ БАГИ: #1, #2, #3, #4, #5, #6, #7, #8, #9, #10
-ИСПРАВЛЕНЫ НОВЫЕ БАГИ: JOIN columns, string functions case handling, transaction rollback
+ИСПРАВЛЕНЫ БАГИ: #1, #2, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13
+ИСПРАВЛЕНЫ НОВЫЕ БАГИ: JOIN columns, string functions case handling, transaction rollback, empty column sorting,
+table disappearing on sort, column selection
 """
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                               QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
                               QComboBox, QLineEdit, QMenu, QInputDialog, QCheckBox,
                               QSpinBox, QFormLayout, QTextEdit, QDialogButtonBox, QWidget,
-                              QScrollArea, QRadioButton, QButtonGroup)
+                              QScrollArea, QRadioButton, QButtonGroup, QGroupBox)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from controller import NumericTableItem
@@ -36,6 +37,10 @@ class TaskDialog(QDialog):
         self.current_order_by = None
         self.current_group_by = None
         self.current_having = None
+        # Добавляем флаг режима соединения для правильной обработки заголовков
+        self.is_join_mode = False
+        # Словарь для сохранения оригинальных имен столбцов
+        self.original_column_names = {}
 
         self.setWindowTitle("Техническое задание - Управление БД")
         self.setMinimumSize(1200, 700)
@@ -138,21 +143,33 @@ class TaskDialog(QDialog):
         self.current_having = None
         self.join_tables = []
         self.join_conditions = []
+        # Сбросить флаг режима соединения
+        self.is_join_mode = False
+        self.original_column_names = {}
 
         self.load_table_data_filtered()
         self.update_status()
         QMessageBox.information(self, "Успех", "Все фильтры и соединения сброшены")
         self.logger.info(f"Фильтры сброшены для таблицы {self.current_table}")
 
+    # ✅ БАГ #5: Предзаполнение данных из выбранной ячейки
     def on_cell_double_clicked(self, row, column):
         """Обработка двойного клика по ячейке для открытия диалога группировки."""
         if not self.current_table or column >= len(self.current_columns):
             return
 
         column_name = self.current_columns[column]
+        # Получаем значение из ячейки для предзаполнения
+        cell_value = self.data_table.item(row, column).text() if self.data_table.item(row, column) else ""
+
+        # Определяем оригинальное имя столбца для JOIN таблиц
+        orig_column_name = column_name
+        if self.is_join_mode and column_name in self.original_column_names:
+            orig_column_name = self.original_column_names[column_name]
 
         dialog = GroupFilterDialog(self.controller, self.current_table,
-                                   self.all_columns_info, column_name, self)
+                                   self.all_columns_info, orig_column_name,
+                                   cell_value, self.is_join_mode, self)
         if dialog.exec_():
             self.current_where = dialog.where_clause if dialog.where_clause else None
             self.current_order_by = dialog.order_clause if dialog.order_clause else None
@@ -166,12 +183,30 @@ class TaskDialog(QDialog):
                 having=self.current_having
             )
 
+    # ✅ БАГ #6: Исправлена сортировка для JOIN таблиц и пустых столбцов
     def on_column_header_clicked(self, logical_index):
         """Обработка клика по заголовку столбца для сортировки."""
         if not self.current_table or logical_index >= len(self.current_columns):
             return
 
         column_name = self.current_columns[logical_index]
+
+        # Проверка на пустую таблицу
+        if self.data_table.rowCount() == 0:
+            QMessageBox.warning(self, "Ошибка", "Таблица пуста, сортировка невозможна")
+            return
+
+        # Проверка на пустые столбцы
+        empty_column = True
+        for row in range(self.data_table.rowCount()):
+            item = self.data_table.item(row, logical_index)
+            if item and item.text().strip():
+                empty_column = False
+                break
+
+        if empty_column:
+            QMessageBox.warning(self, "Ошибка", "Столбец не содержит данных для сортировки")
+            return
 
         if column_name in self.current_sort_order:
             order = "DESC" if self.current_sort_order[column_name] == "ASC" else "ASC"
@@ -180,13 +215,28 @@ class TaskDialog(QDialog):
 
         self.current_sort_order = {column_name: order}
 
-        order_clause = f"{column_name} {order}"
-        self.load_table_data_filtered(
-            where=self.current_where,
-            order_by=order_clause,
-            group_by=self.current_group_by,
-            having=self.current_having
-        )
+        # ✅ БАГ: Правильная сортировка для JOIN таблиц
+        if self.is_join_mode:
+            # Находим оригинальное имя столбца для соединенной таблицы
+            if column_name in self.original_column_names:
+                orig_column_name = self.original_column_names[column_name]
+                order_clause = f"{orig_column_name} {order}"
+                # Обновляем конфигурацию JOIN для сортировки
+                self.join_config['order_by'] = order_clause
+                # Заново выполняем JOIN с новым порядком сортировки
+                self.execute_join_display(self.join_config)
+            else:
+                QMessageBox.warning(self, "Ошибка сортировки", "Не удалось найти информацию о столбце для сортировки")
+        else:
+            # Стандартная сортировка для обычной таблицы
+            order_clause = f"{column_name} {order}"
+            self.load_table_data_filtered(
+                where=self.current_where,
+                order_by=order_clause,
+                group_by=self.current_group_by,
+                having=self.current_having
+            )
+
         self.logger.info(f"Сортировка по {column_name} {order}")
 
     def show_search_dialog(self):
@@ -241,14 +291,23 @@ class TaskDialog(QDialog):
                 having=self.current_having
             )
 
+    # ✅ БАГ #4: Предустановка столбца для удаления
     def show_delete_menu(self):
         """Показ меню удаления как отдельный диалог."""
         if not self.current_table:
             QMessageBox.warning(self, "Ошибка", "Сначала выберите таблицу через 'Вывод данных'")
             return
 
+        # Получение выбранного столбца
+        selected_column = None
+        selected_items = self.data_table.selectedItems()
+        if selected_items:
+            selected_col_idx = self.data_table.column(selected_items[0])
+            if 0 <= selected_col_idx < len(self.current_columns):
+                selected_column = self.current_columns[selected_col_idx]
+
         dialog = DeleteMenuDialog(self.controller, self.current_table, self.all_columns_info,
-                                 self.data_table, self)
+                                 self.data_table, selected_column, self)
         if dialog.exec_():
             # ✅ БАГ #3: Очистить кэш перед перезагрузкой
             self.current_columns = []
@@ -271,36 +330,52 @@ class TaskDialog(QDialog):
         else:
             self.current_columns = [col['name'] for col in self.all_columns_info]
 
-        data = self.controller.get_table_data(
-            self.current_table,
-            self.current_columns if columns else None,
-            where,
-            order_by,
-            group_by,
-            having,
-            params
-        )
+        try:
+            if self.is_join_mode:
+                # Для JOIN используем сохраненные параметры
+                results = self.controller.execute_join(
+                    self.join_config['tables_info'],
+                    self.join_config['selected_columns'],
+                    self.join_config['join_conditions'],
+                    where or self.join_config.get('where'),
+                    order_by or self.join_config.get('order_by')
+                )
+                data = results
+            else:
+                data = self.controller.get_table_data(
+                    self.current_table,
+                    self.current_columns if columns else None,
+                    where,
+                    order_by,
+                    group_by,
+                    having,
+                    params
+                )
 
-        # ✅ БАГ #9: Очистить таблицу перед заполнением для избежания утечек памяти
-        self.data_table.clearSpans()
-        self.data_table.setRowCount(0)
+            # ✅ БАГ #9: Очистить таблицу перед заполнением для избежания утечек памяти
+            self.data_table.clearSpans()
+            self.data_table.setRowCount(0)
 
-        self.data_table.setColumnCount(len(self.current_columns))
-        self.data_table.setHorizontalHeaderLabels(self.current_columns)
-        self.data_table.setRowCount(len(data))
+            self.data_table.setColumnCount(len(self.current_columns))
+            self.data_table.setHorizontalHeaderLabels(self.current_columns)
+            self.data_table.setRowCount(len(data))
 
-        for row_idx, row_data in enumerate(data):
-            for col_idx, value in enumerate(row_data):
-                str_value = str(value) if value is not None else ""
+            for row_idx, row_data in enumerate(data):
+                for col_idx, value in enumerate(row_data):
+                    str_value = str(value) if value is not None else ""
 
-                if isinstance(value, (int, float)):
-                    item = NumericTableItem(str_value, value)
-                else:
-                    item = QTableWidgetItem(str_value)
+                    if isinstance(value, (int, float)):
+                        item = NumericTableItem(str_value, value)
+                    else:
+                        item = QTableWidgetItem(str_value)
 
-                self.data_table.setItem(row_idx, col_idx, item)
+                    self.data_table.setItem(row_idx, col_idx, item)
 
-        self.logger.info(f"Загружены данные таблицы {self.current_table}: {len(data)} строк")
+            self.logger.info(f"Загружены данные таблицы {self.current_table}: {len(data)} строк")
+
+        except Exception as e:
+            self.logger.error(f"Ошибка при загрузке данных: {str(e)}")
+            QMessageBox.critical(self, "Ошибка загрузки", f"Не удалось загрузить данные: {str(e)}")
 
     def show_display_options(self):
         """Показ опций вывода данных с выбором таблицы."""
@@ -310,6 +385,7 @@ class TaskDialog(QDialog):
             self.current_table = dialog.selected_table
             self.join_tables = dialog.join_tables
             self.join_conditions = dialog.join_conditions
+            self.is_join_mode = dialog.is_join_mode
             self.update_status()
 
             if not self.current_table:
@@ -321,14 +397,16 @@ class TaskDialog(QDialog):
             self.current_order_by = None
             self.current_group_by = None
             self.current_having = None
+            self.original_column_names = {}
 
             if dialog.is_join_mode:
+                self.join_config = dialog.join_config
                 self.execute_join_display(dialog.join_config)
             else:
                 self.current_columns = dialog.selected_columns if dialog.selected_columns else [col['name'] for col in self.all_columns_info]
                 self.load_table_data_filtered(columns=self.current_columns)
 
-    # ✅ БАГ #7: Улучшенная обработка ошибок
+    # ✅ БАГ #7: Улучшенная обработка ошибок и сохранение оригинальных имен столбцов
     def execute_join_display(self, join_config):
         """Выполнение и отображение результатов JOIN."""
         try:
@@ -341,6 +419,16 @@ class TaskDialog(QDialog):
             )
 
             if results:
+                # Сохраняем соответствие отображаемых имен столбцов и оригинальных имен
+                if 'column_mapping' in join_config:
+                    self.original_column_names = join_config['column_mapping']
+                else:
+                    # Для обратной совместимости
+                    self.original_column_names = {}
+                    for i, display_name in enumerate(join_config['column_labels']):
+                        if i < len(join_config['selected_columns']):
+                            self.original_column_names[display_name] = join_config['selected_columns'][i]
+
                 self.current_columns = join_config['column_labels']
                 self.data_table.clearSpans()
                 self.data_table.setRowCount(0)
@@ -370,12 +458,18 @@ class TaskDialog(QDialog):
                 hint = "Проверьте условия соединения"
 
             QMessageBox.critical(self, "Ошибка выполнения JOIN",
-                f"Не удалось выполнить соединение:\n\n{hint}\n\n"
-                f"Техническая информация:\n{error_msg}")
+                                 f"Не удалось выполнить соединение:\n\n{hint}\n\n"
+                                 f"Техническая информация:\n{error_msg}")
 
         except Exception as e:
             self.logger.error(f"Неожиданная ошибка JOIN: {str(e)}")
             QMessageBox.critical(self, "Ошибка", f"Неожиданная ошибка: {str(e)}")
+
+    def execute_join_with_sort(self, join_config):
+        """Выполнение JOIN запроса с учетом сортировки."""
+        # Сохраняем текущую конфигурацию для последующих операций
+        self.join_config = join_config
+        self.execute_join_display(join_config)
 
 
 class EditMenuDialog(QDialog):
@@ -424,7 +518,15 @@ class EditMenuDialog(QDialog):
 
     def edit_column(self):
         """Редактирование столбца."""
-        dialog = EditColumnDialog(self.controller, self.table_name, self.columns_info, self)
+        selected_column = None
+        selected_items = self.data_table.selectedItems()
+        if selected_items:
+            selected_col_idx = self.data_table.column(selected_items[0])
+            column_name = self.data_table.horizontalHeaderItem(selected_col_idx).text()
+            if column_name:
+                selected_column = column_name
+
+        dialog = EditColumnDialog(self.controller, self.table_name, self.columns_info, selected_column, self)
         if dialog.exec_():
             self.action_taken = True
             self.accept()
@@ -527,14 +629,16 @@ class AddMenuDialog(QDialog):
         self.accept()
 
 
+# ✅ БАГ #4: Предустановка столбца для удаления
 class DeleteMenuDialog(QDialog):
     """Диалог меню удаления."""
-    def __init__(self, controller, table_name, columns_info, data_table, parent=None):
+    def __init__(self, controller, table_name, columns_info, data_table, selected_column=None, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.table_name = table_name
         self.columns_info = columns_info
         self.data_table = data_table
+        self.selected_column = selected_column
         self.action_taken = False
 
         self.setWindowTitle("Удалить")
@@ -571,9 +675,11 @@ class DeleteMenuDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    # ✅ БАГ #4: Передаем выбранный столбец в диалог удаления столбца
     def delete_column(self):
         """Удаление столбца."""
-        dialog = DeleteColumnDialog(self.controller, self.table_name, self.columns_info, self)
+        dialog = DeleteColumnDialog(self.controller, self.table_name, self.columns_info,
+                                   self.selected_column, self)
         if dialog.exec_():
             self.action_taken = True
             self.accept()
@@ -697,13 +803,15 @@ class AddColumnDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Не удалось добавить столбец:\n{error}")
 
 
+# ✅ БАГ #4: Использование предвыбранного столбца
 class EditColumnDialog(QDialog):
     """Диалог редактирования столбца."""
-    def __init__(self, controller, table_name, columns_info, parent=None):
+    def __init__(self, controller, table_name, columns_info, selected_column=None, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.table_name = table_name
         self.columns_info = columns_info
+        self.selected_column = selected_column
 
         self.setWindowTitle("Редактировать столбец")
         self.setMinimumWidth(450)
@@ -723,6 +831,13 @@ class EditColumnDialog(QDialog):
         column_layout.addWidget(QLabel("Столбец:"))
         self.column_combo = QComboBox()
         self.column_combo.addItems([col['name'] for col in self.columns_info])
+
+        # Если передан выбранный столбец, устанавливаем его
+        if self.selected_column:
+            index = self.column_combo.findText(self.selected_column)
+            if index >= 0:
+                self.column_combo.setCurrentIndex(index)
+
         column_layout.addWidget(self.column_combo)
         layout.addLayout(column_layout)
 
@@ -843,13 +958,15 @@ class EditColumnDialog(QDialog):
                 QMessageBox.critical(self, "Ошибка", f"Не удалось снять ограничение:\n{error}")
 
 
+# ✅ БАГ #4: Использование предвыбранного столбца
 class DeleteColumnDialog(QDialog):
     """Диалог для удаления столбца."""
-    def __init__(self, controller, table_name, columns_info, parent=None):
+    def __init__(self, controller, table_name, columns_info, selected_column=None, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.table_name = table_name
         self.columns_info = columns_info
+        self.selected_column = selected_column
 
         self.setWindowTitle("Удалить столбец")
         self.setMinimumWidth(300)
@@ -869,6 +986,13 @@ class DeleteColumnDialog(QDialog):
 
         self.column_combo = QComboBox()
         self.column_combo.addItems([col['name'] for col in self.columns_info])
+
+        # Если есть предвыбранный столбец, устанавливаем его
+        if self.selected_column:
+            index = self.column_combo.findText(self.selected_column)
+            if index >= 0:
+                self.column_combo.setCurrentIndex(index)
+
         layout.addWidget(self.column_combo)
 
         layout.addStretch()
@@ -1074,14 +1198,17 @@ class EditRecordDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Не удалось обновить запись:\n{error}")
 
 
+# ✅ БАГ #5: Предзаполнение значений для группировки
 class GroupFilterDialog(QDialog):
     """Диалог группировки и фильтрации данных."""
-    def __init__(self, controller, table_name, columns_info, selected_column, parent=None):
+    def __init__(self, controller, table_name, columns_info, selected_column, cell_value="", is_join_mode=False, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.table_name = table_name
         self.columns_info = columns_info
         self.selected_column = selected_column
+        self.cell_value = cell_value
+        self.is_join_mode = is_join_mode
 
         self.where_clause = None
         self.order_clause = None
@@ -1106,27 +1233,75 @@ class GroupFilterDialog(QDialog):
 
         form_layout = QFormLayout()
 
-        where_label = QLabel("WHERE (фильтр):")
-        self.where_edit = QLineEdit()
-        self.where_edit.setPlaceholderText(f"Например: {self.selected_column} LIKE '%value%'")
-        form_layout.addRow(where_label, self.where_edit)
+        # Группа для фильтрации
+        filter_group = QGroupBox("Фильтрация (WHERE)")
+        filter_layout = QVBoxLayout(filter_group)
 
-        group_label = QLabel("GROUP BY:")
-        self.group_edit = QLineEdit()
-        self.group_edit.setPlaceholderText(f"Например: {self.selected_column}")
-        form_layout.addRow(group_label, self.group_edit)
+        where_layout = QHBoxLayout()
+        where_layout.addWidget(QLabel("Столбец:"))
+        self.where_column_edit = QLineEdit(self.selected_column)
+        where_layout.addWidget(self.where_column_edit)
 
-        having_label = QLabel("HAVING:")
-        self.having_edit = QLineEdit()
-        self.having_edit.setPlaceholderText("Например: COUNT(*) > 5")
-        form_layout.addRow(having_label, self.having_edit)
+        self.where_operator_combo = QComboBox()
+        self.where_operator_combo.addItems(["=", "!=", "<", "<=", ">", ">=", "LIKE", "IN", "IS NULL", "IS NOT NULL"])
+        where_layout.addWidget(self.where_operator_combo)
 
-        order_label = QLabel("ORDER BY:")
-        self.order_edit = QLineEdit()
-        self.order_edit.setPlaceholderText(f"Например: {self.selected_column} ASC")
-        form_layout.addRow(order_label, self.order_edit)
+        self.where_value_edit = QLineEdit()
+        # Предзаполняем значение, если оно есть
+        if self.cell_value:
+            self.where_value_edit.setText(self.cell_value)
+        where_layout.addWidget(self.where_value_edit)
+        filter_layout.addLayout(where_layout)
 
-        layout.addLayout(form_layout)
+        # Скрываем поле значения для операторов IS NULL/IS NOT NULL
+        self.where_operator_combo.currentTextChanged.connect(self.update_where_ui)
+
+        layout.addWidget(filter_group)
+
+        # Группа для группировки
+        group_group = QGroupBox("Группировка (GROUP BY)")
+        group_layout = QVBoxLayout(group_group)
+
+        self.group_check = QCheckBox(f"Группировать по столбцу: {self.selected_column}")
+        group_layout.addWidget(self.group_check)
+
+        having_layout = QHBoxLayout()
+        having_layout.addWidget(QLabel("HAVING:"))
+        self.having_function_combo = QComboBox()
+        self.having_function_combo.addItems(["COUNT", "SUM", "AVG", "MIN", "MAX"])
+        having_layout.addWidget(self.having_function_combo)
+
+        having_layout.addWidget(QLabel("(*)"))
+
+        self.having_operator_combo = QComboBox()
+        self.having_operator_combo.addItems(["=", "!=", "<", "<=", ">", ">="])
+        having_layout.addWidget(self.having_operator_combo)
+
+        self.having_value_edit = QLineEdit()
+        having_layout.addWidget(self.having_value_edit)
+
+        group_layout.addLayout(having_layout)
+        layout.addWidget(group_group)
+
+        # Группа для сортировки
+        sort_group = QGroupBox("Сортировка (ORDER BY)")
+        sort_layout = QVBoxLayout(sort_group)
+
+        self.order_check = QCheckBox(f"Сортировать по столбцу: {self.selected_column}")
+        self.order_check.setChecked(True)
+        sort_layout.addWidget(self.order_check)
+
+        order_direction_layout = QHBoxLayout()
+        self.order_asc_radio = QRadioButton("По возрастанию (ASC)")
+        self.order_asc_radio.setChecked(True)
+        order_direction_layout.addWidget(self.order_asc_radio)
+
+        self.order_desc_radio = QRadioButton("По убыванию (DESC)")
+        order_direction_layout.addWidget(self.order_desc_radio)
+
+        sort_layout.addLayout(order_direction_layout)
+        layout.addWidget(sort_group)
+
         layout.addStretch()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -1134,12 +1309,63 @@ class GroupFilterDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # Инициализируем UI фильтрации
+        self.update_where_ui(self.where_operator_combo.currentText())
+
+    def update_where_ui(self, operator_text):
+        """Обновление UI фильтрации в зависимости от оператора."""
+        if operator_text in ["IS NULL", "IS NOT NULL"]:
+            self.where_value_edit.setVisible(False)
+        else:
+            self.where_value_edit.setVisible(True)
+
     def accept_dialog(self):
         """Принятие настроек."""
-        self.where_clause = self.where_edit.text().strip() or None
-        self.group_clause = self.group_edit.text().strip() or None
-        self.having_clause = self.having_edit.text().strip() or None
-        self.order_clause = self.order_edit.text().strip() or None
+        # Сформировать WHERE
+        if self.where_operator_combo.currentText() in ["IS NULL", "IS NOT NULL"]:
+            self.where_clause = f"{self.where_column_edit.text()} {self.where_operator_combo.currentText()}"
+        else:
+            if self.where_value_edit.text().strip():
+                op = self.where_operator_combo.currentText()
+                if op == "LIKE":
+                    value = f"'%{self.where_value_edit.text()}%'"
+                elif op == "IN":
+                    # Предполагаем, что значения разделены запятыми
+                    values = [f"'{v.strip()}'" for v in self.where_value_edit.text().split(",")]
+                    value = f"({', '.join(values)})"
+                else:
+                    # Для числовых значений не используем кавычки
+                    try:
+                        float(self.where_value_edit.text())
+                        value = self.where_value_edit.text()
+                    except ValueError:
+                        value = f"'{self.where_value_edit.text()}'"
+                self.where_clause = f"{self.where_column_edit.text()} {op} {value}"
+            else:
+                self.where_clause = None
+
+        # Сформировать GROUP BY
+        if self.group_check.isChecked():
+            self.group_clause = self.selected_column
+
+            # Сформировать HAVING
+            if self.having_value_edit.text().strip():
+                func = self.having_function_combo.currentText()
+                op = self.having_operator_combo.currentText()
+                value = self.having_value_edit.text()
+                self.having_clause = f"{func}(*) {op} {value}"
+            else:
+                self.having_clause = None
+        else:
+            self.group_clause = None
+            self.having_clause = None
+
+        # Сформировать ORDER BY
+        if self.order_check.isChecked():
+            direction = "DESC" if self.order_desc_radio.isChecked() else "ASC"
+            self.order_clause = f"{self.selected_column} {direction}"
+        else:
+            self.order_clause = None
 
         self.accept()
 
@@ -1147,6 +1373,7 @@ class GroupFilterDialog(QDialog):
 # ✅ БАГ #5: Параметризованный SearchDialog
 class SearchDialog(QDialog):
     """Диалог поиска по таблице с защитой от SQL Injection."""
+
     def __init__(self, controller, table_name, columns_info, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -1244,6 +1471,7 @@ class SearchDialog(QDialog):
 
 class DisplayOptionsDialog(QDialog):
     """Диалог опций вывода данных."""
+
     def __init__(self, controller, current_table=None, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -1340,6 +1568,7 @@ class DisplayOptionsDialog(QDialog):
 # ✅ БАГ #1: Всегда получать свежие данные при открытии
 class SelectTableDialog(QDialog):
     """Диалог выбора таблицы с отображением и выбором столбцов."""
+
     def __init__(self, controller, current_table=None, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -1462,7 +1691,7 @@ class SelectTableDialog(QDialog):
         self.accept()
 
 
-# ✅ БАГ #4: Исправлен JoinWizardDialog с сохранением ссылки на scroll_area
+# ✅ БАГ #1: Исправлен JoinWizardDialog для отображения столбцов из всех таблиц
 class JoinWizardDialog(QDialog):
     """Мастер создания JOIN запросов."""
 
@@ -1470,7 +1699,9 @@ class JoinWizardDialog(QDialog):
         super().__init__(parent)
         self.controller = controller
         self.base_table = base_table
-        self.scroll_area = None  # ✅ БАГ #4: Добавить это
+        self.scroll_area = None
+        self.join_columns_checks = {}
+        self.base_columns_checks = {}
 
         self.setWindowTitle("Мастер соединений (JOIN)")
         self.setMinimumWidth(700)
@@ -1533,29 +1764,41 @@ class JoinWizardDialog(QDialog):
 
         layout.addLayout(on_layout)
 
+        # ✅ БАГ #1: Добавляем группы для выбора столбцов обеих таблиц
         layout.addWidget(QLabel("<b>Выберите столбцы для вывода:</b>"))
 
-        self.columns_checks = {}
-        # ✅ БАГ #4: Сохранить ссылку на scroll_area
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
+        columns_layout = QHBoxLayout()
 
-        join_table = self.join_table_combo.currentText()
-        join_columns = self.controller.get_table_columns(join_table)
+        # Столбцы базовой таблицы
+        base_group = QGroupBox(f"Столбцы таблицы {self.base_table}")
+        base_layout = QVBoxLayout(base_group)
+        base_scroll = QScrollArea()
+        base_scroll.setWidgetResizable(True)
+        base_scroll_widget = QWidget()
+        base_scroll_layout = QVBoxLayout(base_scroll_widget)
 
-        for col in join_columns:
-            check = QCheckBox(f"{join_table}.{col['name']}")
+        base_columns = self.controller.get_table_columns(self.base_table)
+        for col in base_columns:
+            check = QCheckBox(f"{col['name']}")
             check.setChecked(True)
-            self.columns_checks[f"{join_table}.{col['name']}"] = check
-            scroll_layout.addWidget(check)
+            self.base_columns_checks[col['name']] = check
+            base_scroll_layout.addWidget(check)
 
-        scroll_layout.addStretch()
-        self.scroll_area.setWidget(scroll_widget)
-        layout.addWidget(self.scroll_area)
+        base_scroll_layout.addStretch()
+        base_scroll.setWidget(base_scroll_widget)
+        base_layout.addWidget(base_scroll)
+        columns_layout.addWidget(base_group)
 
+        # Столбцы присоединяемой таблицы
+        join_group = QGroupBox(f"Столбцы присоединяемой таблицы")
+        join_layout = QVBoxLayout(join_group)
+        self.join_scroll = QScrollArea()
+        self.join_scroll.setWidgetResizable(True)
         self.update_join_columns(self.join_table_combo.currentText())
+        join_layout.addWidget(self.join_scroll)
+        columns_layout.addWidget(join_group)
+
+        layout.addLayout(columns_layout)
 
         layout.addWidget(QLabel("<b>WHERE (опционально):</b>"))
         self.where_edit = QLineEdit()
@@ -1572,7 +1815,6 @@ class JoinWizardDialog(QDialog):
         self.base_column_combo.clear()
         self.base_column_combo.addItems([col['name'] for col in columns])
 
-    # ✅ БАГ #4: Исправленный метод update_join_columns
     def update_join_columns(self, table_name):
         """Обновление списка столбцов присоединяемой таблицы."""
         if not table_name:
@@ -1583,20 +1825,19 @@ class JoinWizardDialog(QDialog):
         self.join_column_combo.clear()
         self.join_column_combo.addItems([col['name'] for col in columns])
 
-        # ✅ БАГ #4: Использовать сохранённую ссылку на scroll_area
-        if self.scroll_area:
-            scroll_widget = QWidget()
-            scroll_layout = QVBoxLayout(scroll_widget)
-            self.columns_checks.clear()
+        # Обновляем список столбцов для выбора
+        join_scroll_widget = QWidget()
+        join_scroll_layout = QVBoxLayout(join_scroll_widget)
+        self.join_columns_checks = {}
 
-            for col in columns:
-                check = QCheckBox(f"{table_name}.{col['name']}")
-                check.setChecked(True)
-                self.columns_checks[f"{table_name}.{col['name']}"] = check
-                scroll_layout.addWidget(check)
+        for col in columns:
+            check = QCheckBox(f"{col['name']}")
+            check.setChecked(True)
+            self.join_columns_checks[col['name']] = check
+            join_scroll_layout.addWidget(check)
 
-            scroll_layout.addStretch()
-            self.scroll_area.setWidget(scroll_widget)
+        join_scroll_layout.addStretch()
+        self.join_scroll.setWidget(join_scroll_widget)
 
     def get_join_config(self):
         """Получение конфигурации JOIN."""
@@ -1608,20 +1849,53 @@ class JoinWizardDialog(QDialog):
 
         on_condition = f"{self.base_table}.{base_col} = {join_table}.{join_col}"
 
-        selected_columns = [f"{self.base_table}.*"]
-        for col_name, check in self.columns_checks.items():
-            if check.isChecked():
-                selected_columns.append(col_name)
+        # Формируем выбранные столбцы из обеих таблиц
+        selected_columns = []
+        column_labels = []
+        column_mapping = {}  # Для связи отображаемых имен и оригинальных имен столбцов
 
-        if not selected_columns[1:]:
-            selected_columns.append(f"{join_table}.*")
+        # Столбцы из базовой таблицы
+        for col_name, check in self.base_columns_checks.items():
+            if check.isChecked():
+                full_column_name = f"{self.base_table}.{col_name}"
+                display_name = f"{self.base_table}_{col_name}"
+                selected_columns.append(full_column_name)
+                column_labels.append(display_name)
+                column_mapping[display_name] = full_column_name
+
+        # Столбцы из присоединяемой таблицы
+        for col_name, check in self.join_columns_checks.items():
+            if check.isChecked():
+                full_column_name = f"{join_table}.{col_name}"
+                display_name = f"{join_table}_{col_name}"
+                selected_columns.append(full_column_name)
+                column_labels.append(display_name)
+                column_mapping[display_name] = full_column_name
+
+        # Если ничего не выбрано, добавляем все столбцы
+        if not selected_columns:
+            selected_columns = [f"{self.base_table}.*", f"{join_table}.*"]
+            base_columns = [col['name'] for col in self.controller.get_table_columns(self.base_table)]
+            join_columns = [col['name'] for col in self.controller.get_table_columns(join_table)]
+
+            column_labels = []
+            for col in base_columns:
+                display_name = f"{self.base_table}_{col}"
+                column_labels.append(display_name)
+                column_mapping[display_name] = f"{self.base_table}.{col}"
+
+            for col in join_columns:
+                display_name = f"{join_table}_{col}"
+                column_labels.append(display_name)
+                column_mapping[display_name] = f"{join_table}.{col}"
 
         return {
             'tables_info': [
                 {'name': self.base_table, 'alias': None}
             ],
             'selected_columns': selected_columns,
-            'column_labels': [col.replace('.', '_') for col in selected_columns],
+            'column_labels': column_labels,
+            'column_mapping': column_mapping,  # Сохраняем маппинг для использования при сортировке
             'join_conditions': [
                 {
                     'type': join_type,
@@ -1635,7 +1909,7 @@ class JoinWizardDialog(QDialog):
         }
 
 
-# ✅ БАГ #8: Исправлена StringFunctionsDialog с экранированием и регистром
+# ✅ БАГ #3: Исправлена StringFunctionsDialog с возможностью применять функции к таблице
 class StringFunctionsDialog(QDialog):
     """Диалог работы со строковыми функциями."""
 
@@ -1712,6 +1986,12 @@ class StringFunctionsDialog(QDialog):
         apply_btn.clicked.connect(self.apply_function)
         buttons_layout.addWidget(apply_btn)
 
+        # ✅ БАГ #3: Добавляем кнопку для создания нового столбца с примененной функцией
+        self.create_column_btn = QPushButton("Создать столбец с результатом")
+        self.create_column_btn.clicked.connect(self.create_column_with_function)
+        self.create_column_btn.setEnabled(False)  # Активируем после применения функции
+        buttons_layout.addWidget(self.create_column_btn)
+
         close_btn = QPushButton("Закрыть")
         close_btn.clicked.connect(self.accept)
         buttons_layout.addWidget(close_btn)
@@ -1756,56 +2036,69 @@ class StringFunctionsDialog(QDialog):
             self.concat_position.addItems(["В начале", "В конце"])
             self.params_layout.addRow("Позиция:", self.concat_position)
 
-    # ✅ БАГ #8: Исправлена обработка строковых функций с экранированием и регистром
-    def apply_function(self):
-        """Применение выбранной функции."""
+        # Сохраняем текущую функцию и параметры для использования при создании столбца
+        self.current_function = function_text
+
+    def get_sql_expression(self):
+        """Формирование SQL выражения для текущей функции с поддержкой кириллицы."""
         column = self.column_combo.currentText()
         function = self.function_combo.currentText()
 
         try:
             if "UPPER" in function:
-                # ✅ ИСПРАВЛЕНО: Правильный синтаксис для верхнего регистра
-                sql_expr = f"UPPER({column})"
+                # Используем специальный вызов для корректной работы с кириллицей
+                sql_expr = f"upper({column})"
             elif "LOWER" in function:
-                # ✅ ИСПРАВЛЕНО: Правильный синтаксис для нижнего регистра
-                sql_expr = f"LOWER({column})"
+                # Используем простую функцию нижнего регистра
+                sql_expr = f"lower({column})"
             elif "INITCAP" in function:
-                # ✅ ИСПРАВЛЕНО: Добавлена функция инициализации заглавной буквы
-                sql_expr = f"INITCAP({column})"
+                # Используем простую инициализацию заглавных букв
+                sql_expr = f"initcap({column})"
             elif "SUBSTRING" in function:
                 start = self.start_pos.value()
                 length = self.length.value()
-                sql_expr = f"SUBSTRING({column}, {start}, {length})"
+                sql_expr = f"substring({column}, {start}, {length})"
             elif "LTRIM" in function:
-                sql_expr = f"LTRIM({column})"
+                sql_expr = f"ltrim({column})"
             elif "RTRIM" in function:
-                sql_expr = f"RTRIM({column})"
+                sql_expr = f"rtrim({column})"
             elif "TRIM" in function:
-                sql_expr = f"TRIM({column})"
+                sql_expr = f"trim({column})"
             elif "LPAD" in function:
                 length = self.pad_length.value()
                 char = self.pad_char.text() or ' '
-                # ✅ БАГ #8: Экранировать кавычки
                 char_escaped = char.replace("'", "''")
-                sql_expr = f"LPAD({column}, {length}, '{char_escaped}')"
+                sql_expr = f"lpad({column}, {length}, '{char_escaped}')"
             elif "RPAD" in function:
                 length = self.pad_length.value()
                 char = self.pad_char.text() or ' '
-                # ✅ БАГ #8: Экранировать кавычки
                 char_escaped = char.replace("'", "''")
-                sql_expr = f"RPAD({column}, {length}, '{char_escaped}')"
+                sql_expr = f"rpad({column}, {length}, '{char_escaped}')"
             elif "CONCAT" in function:
                 text = self.concat_text.text()
-                # ✅ БАГ #8: Экранировать кавычки в тексте
                 text_escaped = text.replace("'", "''")
                 if self.concat_position.currentText() == "В начале":
-                    sql_expr = f"'{text_escaped}' || {column}"
+                    # Использовать функцию concat вместо оператора || для лучшей совместимости
+                    sql_expr = f"concat('{text_escaped}', {column})"
                 else:
-                    sql_expr = f"{column} || '{text_escaped}'"
+                    sql_expr = f"concat({column}, '{text_escaped}')"
             elif "LENGTH" in function:
-                sql_expr = f"LENGTH({column})"
+                # Используем length для корректной работы с кириллицей
+                sql_expr = f"length({column})"
             else:
-                QMessageBox.warning(self, "Ошибка", "Неизвестная функция")
+                raise ValueError("Неизвестная функция")
+
+            return sql_expr, column
+        except Exception as e:
+            self.logger.error(f"Ошибка формирования SQL выражения: {str(e)}")
+            return None, None
+
+    def apply_function(self):
+        """Применение выбранной функции."""
+        try:
+            sql_expr, column = self.get_sql_expression()
+            if not sql_expr:
+                QMessageBox.warning(self, "Ошибка", "Не удалось сформировать SQL выражение")
                 return
 
             query = f"SELECT {column} as original, {sql_expr} as result FROM {self.table_name} LIMIT 20"
@@ -1823,11 +2116,74 @@ class StringFunctionsDialog(QDialog):
                         self.result_table.setItem(row_idx, col_idx, item)
 
                 self.result_table.resizeColumnsToContents()
-                self.logger.info(f"Функция {function} применена успешно")
+                self.logger.info(f"Функция {self.function_combo.currentText()} применена успешно")
+
+                # Разрешаем создание столбца после успешного применения функции
+                self.create_column_btn.setEnabled(True)
             else:
                 QMessageBox.information(self, "Результат", "Нет данных для отображения")
 
-        # ✅ БАГ #8: Обработка ошибок
         except Exception as e:
             self.logger.error(f"Ошибка применения функции: {str(e)}")
             QMessageBox.critical(self, "Ошибка", f"Ошибка при применении функции:\n{str(e)}")
+
+    def create_column_with_function(self):
+        """Создание нового столбца с результатом применения функции."""
+        try:
+            sql_expr, orig_column = self.get_sql_expression()
+            if not sql_expr:
+                QMessageBox.warning(self, "Ошибка", "Не удалось сформировать SQL выражение")
+                return
+
+            # Запрашиваем имя для нового столбца
+            function_name = self.current_function.split(" ")[0].lower()
+            suggested_name = f"{function_name}_{orig_column}"
+
+            new_column_name, ok = QInputDialog.getText(
+                self, "Имя нового столбца",
+                "Введите имя для нового столбца:",
+                text=suggested_name
+            )
+
+            if not ok or not new_column_name:
+                return
+
+            # Определяем тип данных для нового столбца
+            data_type = "TEXT"  # По умолчанию используем TEXT
+            if "LENGTH" in self.current_function:
+                data_type = "INTEGER"
+
+            # Сначала добавляем столбец
+            success, error = self.controller.add_column(
+                self.table_name, new_column_name, data_type
+            )
+
+            if not success:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось добавить столбец:\n{error}")
+                return
+
+            # Затем обновляем его значениями из функции
+            update_query = f"UPDATE {self.table_name} SET {new_column_name} = {sql_expr}"
+            try:
+                # Установить правильную кодировку клиента перед выполнением запроса
+                self.controller.execute_select("SET CLIENT_ENCODING TO 'UTF8'")
+                # Выполнить запрос обновления
+                self.controller.execute_select(update_query)
+                QMessageBox.information(
+                    self, "Успех",
+                    f"Столбец '{new_column_name}' успешно создан и заполнен результатами функции."
+                )
+                self.logger.info(f"Создан столбец '{new_column_name}' с функцией {self.current_function}")
+            except Exception as e:
+                # В случае ошибки при обновлении пытаемся удалить столбец
+                self.controller.drop_column(self.table_name, new_column_name)
+                QMessageBox.critical(self, "Ошибка", f"Ошибка при заполнении столбца:\n{str(e)}")
+                self.logger.error(f"Ошибка при заполнении столбца '{new_column_name}': {str(e)}")
+
+        except Exception as e:
+            self.logger.error(f"Ошибка создания столбца: {str(e)}")
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при создании столбца:\n{str(e)}")
+
+        except Exception as e:
+            self.logger.error(f"Ошибка создания столбца: {str(e)}")
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при создании столбца:\n{str(e)}")
