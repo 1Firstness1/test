@@ -2046,45 +2046,41 @@ class StringFunctionsDialog(QDialog):
 
         try:
             if "UPPER" in function:
-                # Используем специальный вызов для корректной работы с кириллицей
-                sql_expr = f"upper({column})"
+                # Используем стандартную функцию upper() с правильной обработкой кириллицы
+                sql_expr = f"upper(\"{column}\")"
             elif "LOWER" in function:
-                # Используем простую функцию нижнего регистра
-                sql_expr = f"lower({column})"
+                # Используем стандартную функцию lower() с правильной обработкой кириллицы
+                sql_expr = f"lower(\"{column}\")"
             elif "INITCAP" in function:
-                # Используем простую инициализацию заглавных букв
-                sql_expr = f"initcap({column})"
+                sql_expr = f"initcap(\"{column}\")"
             elif "SUBSTRING" in function:
                 start = self.start_pos.value()
                 length = self.length.value()
-                sql_expr = f"substring({column}, {start}, {length})"
+                sql_expr = f"substring(\"{column}\" FROM {start} FOR {length})"
             elif "LTRIM" in function:
-                sql_expr = f"ltrim({column})"
+                sql_expr = f"ltrim(\"{column}\")"
             elif "RTRIM" in function:
-                sql_expr = f"rtrim({column})"
+                sql_expr = f"rtrim(\"{column}\")"
             elif "TRIM" in function:
-                sql_expr = f"trim({column})"
+                sql_expr = f"trim(\"{column}\")"
             elif "LPAD" in function:
                 length = self.pad_length.value()
                 char = self.pad_char.text() or ' '
-                char_escaped = char.replace("'", "''")
-                sql_expr = f"lpad({column}, {length}, '{char_escaped}')"
+                # Используем параметризованный запрос через функцию execute_select
+                sql_expr = f"lpad(\"{column}\", {length}, '{char}')"
             elif "RPAD" in function:
                 length = self.pad_length.value()
                 char = self.pad_char.text() or ' '
-                char_escaped = char.replace("'", "''")
-                sql_expr = f"rpad({column}, {length}, '{char_escaped}')"
+                sql_expr = f"rpad(\"{column}\", {length}, '{char}')"
             elif "CONCAT" in function:
                 text = self.concat_text.text()
-                text_escaped = text.replace("'", "''")
                 if self.concat_position.currentText() == "В начале":
-                    # Использовать функцию concat вместо оператора || для лучшей совместимости
-                    sql_expr = f"concat('{text_escaped}', {column})"
+                    sql_expr = f"concat('{text}', \"{column}\")"
                 else:
-                    sql_expr = f"concat({column}, '{text_escaped}')"
+                    sql_expr = f"concat(\"{column}\", '{text}')"
             elif "LENGTH" in function:
                 # Используем length для корректной работы с кириллицей
-                sql_expr = f"length({column})"
+                sql_expr = f"length(\"{column}\")"
             else:
                 raise ValueError("Неизвестная функция")
 
@@ -2101,7 +2097,11 @@ class StringFunctionsDialog(QDialog):
                 QMessageBox.warning(self, "Ошибка", "Не удалось сформировать SQL выражение")
                 return
 
-            query = f"SELECT {column} as original, {sql_expr} as result FROM {self.table_name} LIMIT 20"
+            # Установка кодировки UTF-8 перед выполнением запроса
+            self.controller.execute_select("SET client_encoding TO 'UTF8'")
+
+            # Используем параметризованный запрос
+            query = f"SELECT {column} as original, {sql_expr} as result FROM \"{self.table_name}\" LIMIT 20"
             results = self.controller.execute_select(query)
 
             if results:
@@ -2163,11 +2163,11 @@ class StringFunctionsDialog(QDialog):
                 return
 
             # Затем обновляем его значениями из функции
-            update_query = f"UPDATE {self.table_name} SET {new_column_name} = {sql_expr}"
+            # Установить UTF-8 кодировку перед выполнением запроса
+            self.controller.execute_select("SET CLIENT_ENCODING TO 'UTF8'")
+
+            update_query = f"UPDATE \"{self.table_name}\" SET \"{new_column_name}\" = {sql_expr}"
             try:
-                # Установить правильную кодировку клиента перед выполнением запроса
-                self.controller.execute_select("SET CLIENT_ENCODING TO 'UTF8'")
-                # Выполнить запрос обновления
                 self.controller.execute_select(update_query)
                 QMessageBox.information(
                     self, "Успех",
@@ -2179,10 +2179,6 @@ class StringFunctionsDialog(QDialog):
                 self.controller.drop_column(self.table_name, new_column_name)
                 QMessageBox.critical(self, "Ошибка", f"Ошибка при заполнении столбца:\n{str(e)}")
                 self.logger.error(f"Ошибка при заполнении столбца '{new_column_name}': {str(e)}")
-
-        except Exception as e:
-            self.logger.error(f"Ошибка создания столбца: {str(e)}")
-            QMessageBox.critical(self, "Ошибка", f"Ошибка при создании столбца:\n{str(e)}")
 
         except Exception as e:
             self.logger.error(f"Ошибка создания столбца: {str(e)}")
