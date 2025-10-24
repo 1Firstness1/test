@@ -3,6 +3,7 @@
 Содержит классы для хранения, доступа и манипуляции данными.
 ИСПРАВЛЕНЫ БАГИ: #5 (SQL Injection) через параметризованные запросы
 ИСПРАВЛЕНЫ НОВЫЕ БАГИ: Transaction handling, JOIN columns, table_name escaping
+ИСПРАВЛЕНА ПОДДЕРЖКА КИРИЛЛИЦЫ: Добавлено явное указание кодировки UTF-8
 """
 import psycopg2
 from psycopg2 import sql, extensions
@@ -90,9 +91,13 @@ class DatabaseManager:
             return False
 
         try:
-            self.connection = psycopg2.connect(**self.connection_params)
+            # Добавлено явное указание кодировки UTF-8 для корректной работы с кириллицей
+            self.connection = psycopg2.connect(**self.connection_params, client_encoding='UTF8')
             self.cursor = self.connection.cursor(cursor_factory=DictCursor)
-            self.logger.info(f"Подключение к БД {self.connection_params['dbname']} успешно")
+
+            # Установка кодировки для сессии (дополнительно)
+            self.cursor.execute("SET client_encoding TO 'UTF8'")
+            self.logger.info(f"Подключение к БД {self.connection_params['dbname']} успешно (UTF-8)")
             return True
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка подключения к БД: {str(e)}")
@@ -114,10 +119,13 @@ class DatabaseManager:
             postgres_params = self.connection_params.copy()
             postgres_params["dbname"] = "postgres"
 
-            conn = psycopg2.connect(**postgres_params)
+            # Добавлено указание кодировки UTF-8
+            conn = psycopg2.connect(**postgres_params, client_encoding='UTF8')
             conn.autocommit = True
             cursor = conn.cursor()
-            self.logger.info(f"Подключение к системной БД postgres успешно")
+            # Установка кодировки для сессии
+            cursor.execute("SET client_encoding TO 'UTF8'")
+            self.logger.info(f"Подключение к системной БД postgres успешно (UTF-8)")
             return conn, cursor
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка подключения к системной БД postgres: {str(e)}")
@@ -142,9 +150,9 @@ class DatabaseManager:
             exists = cursor.fetchone()
 
             if not exists:
-                # Создаем БД если она не существует
-                cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)))
-                self.logger.info(f"База данных {dbname} успешно создана")
+                # Создаем БД если она не существует, с явным указанием кодировки UTF-8
+                cursor.execute(sql.SQL("CREATE DATABASE {} ENCODING 'UTF8'").format(sql.Identifier(dbname)))
+                self.logger.info(f"База данных {dbname} успешно создана (UTF-8)")
             else:
                 self.logger.info(f"База данных {dbname} уже существует")
 
@@ -1408,9 +1416,16 @@ class DatabaseManager:
             if order_by:
                 query += f" ORDER BY {order_by}"
 
-            self.logger.info(f"Выполнение JOIN запроса: {query}")
+            # Устанавливаем явную кодировку UTF-8 для текущей сессии
+            self.cursor.execute("SET client_encoding TO 'UTF8'")
+
+            self.logger.info(f"Выполнение JOIN запроса (UTF-8): {query}")
             self.cursor.execute(query)
-            return self.cursor.fetchall()
+
+            result = self.cursor.fetchall()
+            self.logger.info(f"Получено {len(result)} записей из JOIN запроса")
+            return result
+
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка выполнения JOIN запроса: {str(e)}")
             self.connection.rollback()
