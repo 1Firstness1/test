@@ -6,7 +6,7 @@ import psycopg2
 from psycopg2 import sql, extensions
 from psycopg2.extras import DictCursor
 import enum
-from datetime import datetime
+from datetime import datetime, date
 from logger import Logger
 
 
@@ -108,14 +108,13 @@ class DatabaseManager:
             return False
 
         try:
-            # Копируем параметры и меняем имя БД на 'postgres'
             postgres_params = self.connection_params.copy()
             postgres_params["dbname"] = "postgres"
 
             conn = psycopg2.connect(**postgres_params, client_encoding='UTF8')
             conn.autocommit = True
             cursor = conn.cursor()
-            self.logger.info(f"Подключение к системной БД postgres успешно")
+            self.logger.info("Подключение к системной БД postgres успешно")
             return conn, cursor
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка подключения к системной БД postgres: {str(e)}")
@@ -135,12 +134,15 @@ class DatabaseManager:
 
             dbname = self.connection_params["dbname"]
 
-            # Проверяем существование БД
-            cursor.execute(f"SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
+            cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
             exists = cursor.fetchone()
 
             if not exists:
-                cursor.execute(sql.SQL("CREATE DATABASE {} ENCODING 'UTF8' LC_COLLATE 'ru_RU.UTF-8' LC_CTYPE 'ru_RU.UTF-8' TEMPLATE template0").format(sql.Identifier(dbname)))
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE DATABASE {} ENCODING 'UTF8' LC_COLLATE 'ru_RU.UTF-8' LC_CTYPE 'ru_RU.UTF-8' TEMPLATE template0"
+                    ).format(sql.Identifier(dbname))
+                )
                 self.logger.info(f"База данных {dbname} успешно создана")
             else:
                 self.logger.info(f"База данных {dbname} уже существует")
@@ -168,7 +170,7 @@ class DatabaseManager:
             bool: Успешность создания схемы
         """
         try:
-            # Создание типа перечисления для званий актеров
+            # Тип перечисления для званий актеров
             self.cursor.execute("""
                 DO $$
                 BEGIN
@@ -180,7 +182,7 @@ class DatabaseManager:
                 END$$;
             """)
 
-            # Создание таблицы актеров
+            # Таблица актеров
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS actors (
                     actor_id SERIAL PRIMARY KEY,
@@ -194,7 +196,7 @@ class DatabaseManager:
                 );
             """)
 
-            # Создание таблицы сюжетов
+            # Таблица сюжетов
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS plots (
                     plot_id SERIAL PRIMARY KEY,
@@ -207,7 +209,7 @@ class DatabaseManager:
                 );
             """)
 
-            # Создание таблицы спектаклей
+            # Таблица спектаклей
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS performances (
                     performance_id SERIAL PRIMARY KEY,
@@ -222,7 +224,7 @@ class DatabaseManager:
                 );
             """)
 
-            # Создание таблицы связей между актерами и спектаклями
+            # Связи актеров и спектаклей
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS actor_performances (
                     actor_id INTEGER NOT NULL,
@@ -235,7 +237,7 @@ class DatabaseManager:
                 );
             """)
 
-            # Создание таблицы с игровыми данными
+            # Игровые данные
             self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS game_data (
                     id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
@@ -260,7 +262,7 @@ class DatabaseManager:
             bool: Успешность инициализации
         """
         try:
-            # Добавление игровых данных
+            # Игровые данные
             self.cursor.execute("""
                 INSERT INTO game_data (id, current_year, capital)
                 VALUES (1, 2025, 1000000)
@@ -268,7 +270,7 @@ class DatabaseManager:
                 SET current_year = 2025, capital = 1000000
             """)
 
-            # Добавление тестовых актеров
+            # Актеры
             actors = [
                 ('Иванов', 'Иван', 'Иванович', 'Ведущий', 3, 5),
                 ('Петров', 'Петр', 'Петрович', 'Заслуженный', 5, 10),
@@ -289,7 +291,7 @@ class DatabaseManager:
                     ON CONFLICT (last_name, first_name, patronymic) DO NOTHING
                 """, actor)
 
-            # Добавление тестовых сюжетов
+            # Сюжеты
             plots = [
                 ('Ромео и Джульетта', 500000, 350000, 6, 8, ['Ведущий', 'Мастер']),
                 ('Гамлет', 800000, 500000, 8, 9, ['Мастер', 'Заслуженный']),
@@ -310,7 +312,7 @@ class DatabaseManager:
                     ON CONFLICT (title) DO NOTHING
                 """, plot)
 
-            # Добавление тестовых постановок
+            # Прошлые постановки
             past_performances = [
                 ('Ромео и Джульетта в современном мире', 1, 2022, 600000, 950000, True),
                 ('Гамлет: Перезагрузка', 2, 2023, 850000, 1200000, True),
@@ -324,7 +326,7 @@ class DatabaseManager:
                     ON CONFLICT (year) DO NOTHING
                 """, perf)
 
-            # Добавление связей актеров с постановками
+            # Участники постановок
             actor_perfs = [
                 (1, 1, 'Ромео', 100000),
                 (5, 1, 'Джульетта', 90000),
@@ -372,19 +374,16 @@ class DatabaseManager:
             bool: Успешность сброса
         """
         try:
-            # Очистка всех таблиц
             self.cursor.execute("TRUNCATE TABLE actor_performances CASCADE")
             self.cursor.execute("TRUNCATE TABLE performances CASCADE")
             self.cursor.execute("TRUNCATE TABLE actors CASCADE")
             self.cursor.execute("TRUNCATE TABLE plots CASCADE")
             self.cursor.execute("TRUNCATE TABLE game_data CASCADE")
 
-            # Сброс последовательностей идентификаторов
             self.cursor.execute("ALTER SEQUENCE actors_actor_id_seq RESTART WITH 1")
             self.cursor.execute("ALTER SEQUENCE plots_plot_id_seq RESTART WITH 1")
             self.cursor.execute("ALTER SEQUENCE performances_performance_id_seq RESTART WITH 1")
 
-            # Инициализация тестовыми данными
             self.init_sample_data()
 
             self.connection.commit()
@@ -403,7 +402,6 @@ class DatabaseManager:
             bool: Успешность сброса
         """
         try:
-            # Удаление всех таблиц и типов
             self.cursor.execute("""
                 DROP TABLE IF EXISTS actor_performances CASCADE;
                 DROP TABLE IF EXISTS performances CASCADE;
@@ -415,7 +413,6 @@ class DatabaseManager:
             self.connection.commit()
             self.logger.info("Схема БД успешно удалена")
 
-            # Создание новой схемы
             success = self.create_schema()
 
             return success
@@ -466,7 +463,6 @@ class DatabaseManager:
         """
         try:
             if year:
-                # Запрос с фильтрацией по году
                 self.cursor.execute("""
                     SELECT p.*, pl.title as plot_title 
                     FROM performances p
@@ -474,7 +470,6 @@ class DatabaseManager:
                     WHERE p.year = %s
                 """, (year,))
             else:
-                # Запрос всех спектаклей
                 self.cursor.execute("""
                     SELECT p.*, pl.title as plot_title 
                     FROM performances p
@@ -605,7 +600,6 @@ class DatabaseManager:
             tuple: (успех операции (bool), сообщение об ошибке (str))
         """
         try:
-            # Проверка использования сюжета в спектаклях
             self.cursor.execute("""
                 SELECT COUNT(*) FROM performances
                 WHERE plot_id = %s
@@ -615,13 +609,11 @@ class DatabaseManager:
                 self.logger.error(f"Сюжет с ID {plot_id} используется в спектаклях")
                 return False, "Сюжет используется в спектаклях и не может быть удален"
 
-            # Проверка минимального количества сюжетов
             self.cursor.execute("SELECT COUNT(*) FROM plots")
             if self.cursor.fetchone()[0] <= 5:
                 self.logger.error("Невозможно удалить сюжет: минимальное число сюжетов - 5")
                 return False, "Минимальное число сюжетов - 5"
 
-            # Удаление сюжета
             self.cursor.execute("DELETE FROM plots WHERE plot_id = %s", (plot_id,))
             self.connection.commit()
             self.logger.info(f"Удален сюжет с ID {plot_id}")
@@ -735,7 +727,6 @@ class DatabaseManager:
             tuple: (успех операции (bool), сообщение об ошибке (str))
         """
         try:
-            # Проверка участия актера ТОЛЬКО в текущих постановках
             self.cursor.execute("""
                 SELECT COUNT(*) FROM actor_performances ap
                 JOIN performances p ON ap.performance_id = p.performance_id
@@ -746,13 +737,11 @@ class DatabaseManager:
                 self.logger.error(f"Актер с ID {actor_id} занят в текущих постановках")
                 return False, "Актер занят в текущих постановках"
 
-            # Проверка минимального количества актеров
             self.cursor.execute("SELECT COUNT(*) FROM actors")
             if self.cursor.fetchone()[0] <= 8:
                 self.logger.error("Невозможно удалить актера: минимальное число актеров - 8")
                 return False, "Минимальное число актеров - 8"
 
-            # Удаление всех связей с прошлыми постановками
             self.cursor.execute("""
                 DELETE FROM actor_performances 
                 WHERE actor_id = %s AND performance_id IN (
@@ -760,7 +749,6 @@ class DatabaseManager:
                 )
             """, (actor_id,))
 
-            # Теперь удаляем самого актера
             self.cursor.execute("DELETE FROM actors WHERE actor_id = %s", (actor_id,))
             self.connection.commit()
             self.logger.info(f"Удален актер с ID {actor_id}")
@@ -836,14 +824,12 @@ class DatabaseManager:
             bool: Успешность завершения
         """
         try:
-            # Установка флага завершения и выручки
             self.cursor.execute("""
                 UPDATE performances
                 SET revenue = %s, is_completed = TRUE
                 WHERE performance_id = %s
             """, (revenue, performance_id))
 
-            # Увеличение опыта актеров, участвовавших в спектакле
             self.cursor.execute("""
                 UPDATE actors a
                 SET experience = a.experience + 1
@@ -895,15 +881,12 @@ class DatabaseManager:
             bool: Успешность повышения
         """
         try:
-            # Получение текущего звания
             self.cursor.execute("SELECT rank FROM actors WHERE actor_id = %s", (actor_id,))
             current_rank = self.cursor.fetchone()[0]
 
-            # Определение нового звания
             rank_order = list(ActorRank)
             rank_idx = [r.value for r in rank_order].index(current_rank)
 
-            # Повышение звания, если это возможно
             if rank_idx < len(rank_order) - 1:
                 new_rank = rank_order[rank_idx + 1].value
                 self.cursor.execute("""
@@ -950,7 +933,7 @@ class DatabaseManager:
 
     def get_all_table_names(self):
         """
-        Получение списка всех таблиц в БД (кроме служебных).
+        Получение списка всех таблиц в БД (кроме служебных и основных игровых таблиц).
 
         Returns:
             list: Список имен таблиц
@@ -1041,7 +1024,7 @@ class DatabaseManager:
 
     def execute_update_query(self, query, params=None):
         """
-        Выполнение произвольного UPDATE запроса.
+        Выполнение произвольного UPDATE/DDL запроса.
 
         Args:
             query: SQL запрос
@@ -1060,12 +1043,12 @@ class DatabaseManager:
             else:
                 self.cursor.execute(query)
             self.connection.commit()
-            self.logger.info(f"Выполнен UPDATE запрос: {self.cursor.rowcount} строк обновлено")
+            self.logger.info(f"Выполнен UPDATE/DDL запрос: {self.cursor.rowcount} строк затронуто")
             return True, ""
         except psycopg2.Error as e:
             self.connection.rollback()
             error_msg = str(e)
-            self.logger.error(f"Ошибка выполнения UPDATE запроса: {error_msg}")
+            self.logger.error(f"Ошибка выполнения UPDATE/DDL запроса: {error_msg}")
             return False, error_msg
 
     def create_table(self, table_name, columns):
@@ -1074,7 +1057,7 @@ class DatabaseManager:
 
         Args:
             table_name: Имя таблицы
-            columns: Список словарей с информацией о столбцах [{'name': 'col1', 'type': 'INTEGER'}, ...]
+            columns: Список словарей [{'name': 'col1', 'type': 'INTEGER'}, ...]
 
         Returns:
             tuple: (успех операции (bool), сообщение об ошибке (str))
@@ -1083,7 +1066,7 @@ class DatabaseManager:
             column_definitions = []
             for col in columns:
                 column_definitions.append(f"{sql.Identifier(col['name']).as_string(self.cursor)} {col['type']}")
-            
+
             query = f"CREATE TABLE {sql.Identifier(table_name).as_string(self.cursor)} ({', '.join(column_definitions)})"
             self.cursor.execute(query)
             self.connection.commit()
@@ -1230,7 +1213,11 @@ class DatabaseManager:
             tuple: (успех операции (bool), сообщение об ошибке (str))
         """
         try:
-            query = f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} RENAME COLUMN {sql.Identifier(old_name).as_string(self.cursor)} TO {sql.Identifier(new_name).as_string(self.cursor)}"
+            query = (
+                f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} "
+                f"RENAME COLUMN {sql.Identifier(old_name).as_string(self.cursor)} "
+                f"TO {sql.Identifier(new_name).as_string(self.cursor)}"
+            )
             self.cursor.execute(query)
             self.connection.commit()
             self.logger.info(f"Переименован столбец {old_name} -> {new_name} в таблице {table_name}")
@@ -1340,7 +1327,6 @@ class DatabaseManager:
                 query = f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} ALTER COLUMN {sql.Identifier(column_name).as_string(self.cursor)} DROP NOT NULL"
                 self.cursor.execute(query)
             else:
-                # Получаем имя ограничения
                 self.cursor.execute("""
                     SELECT constraint_name 
                     FROM information_schema.table_constraints 
@@ -1446,7 +1432,8 @@ class DatabaseManager:
             self.logger.error(f"Ошибка удаления записи: {error_msg}")
             return False, error_msg
 
-    def execute_join_query(self, tables_info, selected_columns, join_conditions, where=None, order_by=None):
+    def execute_join_query(self, tables_info, selected_columns, join_conditions, where=None, order_by=None,
+                           group_by=None, having=None):
         """
         Выполнение JOIN запроса.
 
@@ -1456,31 +1443,32 @@ class DatabaseManager:
             join_conditions: Список условий JOIN [{type: 'INNER', table: 'table2', on: 'table1.id = table2.id'}]
             where: Условие WHERE
             order_by: Условие ORDER BY
+            group_by: Условие GROUP BY
+            having: Условие HAVING
 
         Returns:
             list: Результаты запроса
         """
         try:
-            # Не добавляем * автоматически, используем только указанные столбцы
-            cols = ', '.join(selected_columns)
+            cols = ', '.join(selected_columns) if selected_columns else '*'
 
-            # Формируем FROM часть
             main_table = tables_info[0]
             query = f"SELECT {cols} FROM {main_table['name']}"
-
             if main_table.get('alias'):
                 query += f" AS {main_table['alias']}"
 
-            # Добавляем JOIN'ы - ✅ ИСПРАВЛЕНО: правильное экранирование
             for join in join_conditions:
                 query += f" {join['type']} JOIN {join['table']}"
                 if join.get('alias'):
                     query += f" AS {join['alias']}"
                 query += f" ON {join['on']}"
 
-            # Добавляем WHERE и ORDER BY
             if where:
                 query += f" WHERE {where}"
+            if group_by:
+                query += f" GROUP BY {group_by}"
+            if having:
+                query += f" HAVING {having}"
             if order_by:
                 query += f" ORDER BY {order_by}"
 
