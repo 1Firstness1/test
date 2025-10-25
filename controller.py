@@ -112,12 +112,10 @@ class TheaterController:
         Returns:
             tuple: (успех операции (bool), ID спектакля или сообщение об ошибке)
         """
-        # Проверка достаточности капитала
         game_data = self.db.get_game_data()
         if game_data['capital'] < budget:
             return False, "Недостаточно средств в капитале"
 
-        # Проверка сюжета и минимального бюджета
         plots = self.db.get_plots()
         plot = next((p for p in plots if p['plot_id'] == plot_id), None)
 
@@ -127,11 +125,9 @@ class TheaterController:
         if budget < plot['minimum_budget']:
             return False, "Бюджет меньше минимально необходимого для данного сюжета"
 
-        # Создание спектакля в БД
         performance_id = self.db.create_performance(title, plot_id, year, budget)
 
         if performance_id:
-            # Обновление капитала театра
             new_capital = game_data['capital'] - budget
             self.db.update_game_data(year, new_capital)
             return True, performance_id
@@ -152,18 +148,14 @@ class TheaterController:
         Returns:
             dict: Стоимость контракта, премии и общая сумма
         """
-        # Базовая стоимость контракта
         base_cost = 30000
 
-        # Бонус за звание
         rank_order = ['Начинающий', 'Постоянный', 'Ведущий', 'Мастер', 'Заслуженный', 'Народный']
         rank_bonus = rank_order.index(actor['rank']) * 10000
 
-        # Бонусы за опыт и награды
         experience_bonus = actor['experience'] * 2000
         awards_bonus = actor['awards_count'] * 5000
 
-        # Расчет итоговой стоимости
         contract_cost = base_cost + rank_bonus + experience_bonus + awards_bonus
         premium = contract_cost / 5
 
@@ -183,48 +175,37 @@ class TheaterController:
         Returns:
             tuple: (успех операции (bool), результаты спектакля (dict))
         """
-        # Получение данных спектакля
         performances = self.db.get_performances()
         performance = next((p for p in performances if p['performance_id'] == performance_id), None)
 
         if not performance or performance['is_completed']:
             return False, "Спектакль не найден или уже завершен"
 
-        # Получение данных сюжета
         plots = self.db.get_plots()
         plot = next((p for p in plots if p['plot_id'] == performance['plot_id']), None)
 
-        # Получение списка актеров в спектакле
         actors = self.db.get_actors_in_performance(performance_id)
 
-        # Расчет фактических затрат
         total_spent = plot['production_cost']
         for actor in actors:
             total_spent += actor['contract_cost']
 
-        # Определение фактического бюджета и экономии
         actual_budget = min(performance['budget'], total_spent)
         saved_budget = performance['budget'] - actual_budget
 
-        # Расчет базовой выручки (увеличена для лучшего баланса)
         base_revenue = actual_budget * (0.7 + 0.08 * plot['demand'])
 
-        # Непредвиденные расходы (5-15% от бюджета)
         unexpected_expenses = int(actual_budget * random.uniform(0.05, 0.15))
         self.logger.info(f"Непредвиденные расходы спектакля {performance_id}: {unexpected_expenses}")
 
-        # Проверка соответствия званий актеров требованиям ролей
         rank_order = ['Начинающий', 'Постоянный', 'Ведущий', 'Мастер', 'Заслуженный', 'Народный']
         actors_match_requirements = True
 
-        # Предполагаем, что required_ranks содержит список минимальных званий для ролей
         required_ranks = plot.get('required_ranks', [])
         if isinstance(required_ranks, str) and required_ranks.startswith('{') and required_ranks.endswith('}'):
             required_ranks = required_ranks[1:-1].split(',')
-            # Очистка кавычек
             required_ranks = [r.strip('"') for r in required_ranks]
 
-        # Проверяем соответствие званий, если у нас есть требования
         if required_ranks and len(required_ranks) > 0:
             for i, actor in enumerate(actors):
                 if i < len(required_ranks):
@@ -238,58 +219,43 @@ class TheaterController:
                                 f"Актер {actor['last_name']} ({actor['rank']}) не соответствует требованию {required_rank}")
                             break
 
-        # Расчет бонусов за актеров (улучшено для избежания больших убытков)
         actors_bonus = 0
         for actor in actors:
             rank_index = rank_order.index(actor['rank'])
-            # Улучшенный множитель ранга для более справедливого расчета
             rank_multiplier = 1 + (rank_index * 0.15)
 
             award_bonus = actor['awards_count'] * 0.05
             exp_bonus = actor['experience'] * 0.01
 
-            # Улучшенный расчет вклада актера
             actor_contribution = actor['contract_cost'] * rank_multiplier * (1 + award_bonus + exp_bonus)
             actors_bonus += actor_contribution
 
-        # Определение типа спектакля с учетом соответствия требованиям
         fate_roll = random.random()
-
-        # Корректировка шанса провала в зависимости от соответствия званий
         fail_chance = 0.4 if actors_match_requirements else 0.6
 
-        # Провал: шанс зависит от соответствия званий
         if fate_roll < fail_chance:
             self.logger.info(f"Спектакль {performance_id} оказался провальным!")
-            # При несоответствии званий - еще хуже результат
             random_factor = random.uniform(0.4, 0.7) if actors_match_requirements else random.uniform(0.3, 0.5)
-        # Норма: ~30% шанс с доходом 70-100% от ожидаемого
         elif fate_roll < 0.9:
             self.logger.info(f"Спектакль {performance_id} прошел в обычном режиме")
             random_factor = random.uniform(0.7, 1.0)
-        # Успех: 10% шанс с доходом 100-140% от ожидаемого (увеличен максимальный бонус)
         else:
             self.logger.info(f"Спектакль {performance_id} прошел с большим успехом!")
             random_factor = random.uniform(1.0, 1.4)
 
-        # Итоговая выручка
         total_revenue = int((base_revenue + actors_bonus) * random_factor)
 
-        # Учитываем непредвиденные расходы при расчете прибыли
         total_expenses = actual_budget + unexpected_expenses
         profit = total_revenue - total_expenses
 
-        # Обновление данных в БД - передаем полные расходы включая непредвиденные
         self.db.update_performance_budget(performance_id, total_expenses)
         self.db.complete_performance(performance_id, total_revenue)
 
-        # Обновление игровых данных - ИСПРАВЛЕННЫЙ РАСЧЕТ
         game_data = self.db.get_game_data()
         new_capital = game_data['capital'] + total_revenue + saved_budget - unexpected_expenses
         current_year = game_data['current_year'] + 1
         self.db.update_game_data(current_year, new_capital)
 
-        # Определение успешных актеров для награждения (только если прибыль положительная)
         successful_actors = []
         if profit > 0:
             sorted_actors = sorted(actors,
@@ -298,24 +264,21 @@ class TheaterController:
                                                   a['awards_count']),
                                    reverse=True)
 
-            # Награждение лучших актеров
             for i, actor in enumerate(sorted_actors[:3]):
                 self.db.award_actor(actor['actor_id'])
                 successful_actors.append(actor)
 
-                # Повышение звания самого успешного актера
-                if i == 0 and profit > total_expenses * 0.3:  # Снизили порог для повышения
+                if i == 0 and profit > total_expenses * 0.3:
                     self.db.upgrade_actor_rank(actor['actor_id'])
 
-        # Формирование результатов
         return True, {
             'revenue': total_revenue,
-            'budget': total_expenses,  # Включаем непредвиденные расходы в общий бюджет
+            'budget': total_expenses,
             'original_budget': performance['budget'],
             'saved_budget': saved_budget,
             'profit': profit,
             'awarded_actors': successful_actors,
-            'unexpected_expenses': unexpected_expenses  # Добавлено в результаты
+            'unexpected_expenses': unexpected_expenses
         }
 
     def skip_year(self):
@@ -325,15 +288,12 @@ class TheaterController:
         Returns:
             dict: Новый год, капитал и доход от продажи прав
         """
-        # Получение текущих данных
         game_data = self.db.get_game_data()
         current_year = game_data['current_year']
         current_capital = game_data['capital']
 
-        # Расчет дохода от продажи прав (10-20% от капитала)
         rights_sale = int(current_capital * random.uniform(0.1, 0.2))
 
-        # Обновление данных
         new_capital = current_capital + rights_sale
         new_year = current_year + 1
         self.db.update_game_data(new_year, new_capital)
@@ -422,9 +382,11 @@ class TheaterController:
         """Удаление записи."""
         return self.db.delete_table_row(table_name, where_clause, where_params)
 
-    def execute_join(self, tables_info, selected_columns, join_conditions, where=None, order_by=None):
-        """Выполнение JOIN запроса."""
-        return self.db.execute_join_query(tables_info, selected_columns, join_conditions, where, order_by)
+    def execute_join(self, tables_info, selected_columns, join_conditions, where=None, order_by=None, group_by=None,
+                     having=None):
+        """Выполнение JOIN запроса (поддержка WHERE/ORDER BY/GROUP BY/HAVING)."""
+        return self.db.execute_join_query(tables_info, selected_columns, join_conditions, where, order_by, group_by,
+                                          having)
 
     def execute_select(self, query, params=None):
         """Выполнение произвольного SELECT запроса."""
@@ -554,25 +516,19 @@ class ValidatedLoginLineEdit(QLineEdit):
 
     def keyPressEvent(self, event):
         """Обработка нажатия клавиш с валидацией."""
-        # Сохраняем текущий текст и позицию курсора
         old_text = self.text()
         cursor_pos = self.cursorPosition()
 
-        # Вызываем стандартную обработку нажатия клавиш
         super().keyPressEvent(event)
 
-        # Проверяем валидность нового текста
         new_text = self.text()
 
-        # Если текст пустой, разрешаем его
         if not new_text:
             return
 
-        # Используем функцию валидации
         if self.controller.is_valid_text_input(new_text):
             return
 
-        # Если текст не валиден, восстанавливаем старый текст
         self.setText(old_text)
         self.setCursorPosition(cursor_pos)
 
@@ -589,20 +545,15 @@ class ValidatedLineEdit(QLineEdit):
 
     def keyPressEvent(self, event):
         """Обработка нажатия клавиш с валидацией."""
-        # Сохраняем текущий текст и позицию курсора
         old_text = self.text()
         cursor_pos = self.cursorPosition()
 
-        # Вызываем стандартную обработку нажатия клавиш
         super().keyPressEvent(event)
 
-        # Проверяем валидность нового текста
         new_text = self.text()
 
-        # Если текст пустой, разрешаем его
         if not new_text or self.controller.is_valid_text_input(new_text):
             return
 
-        # Если текст не валиден, восстанавливаем старый текст
         self.setText(old_text)
         self.setCursorPosition(cursor_pos)
