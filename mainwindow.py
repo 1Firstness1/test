@@ -29,7 +29,7 @@ class MainWindow(QMainWindow):
         self.logger = Logger()
 
         self.setWindowTitle("Театральный менеджер")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(1100, 700)
 
         # Установка стилей для всего приложения
         self.set_application_style()
@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         <p><b>5. Сюжеты</b> - добавляйте и удаляйте сюжеты</p>
         <p><b>6. Актёры</b> - добавляйте и удаляйте актеров</p>
         <p><b>7. Пропустить год</b> - продайте права на постановку и получите дополнительные средства</p>
+        <p><b>8. ТЗ</b> - Техническое задание для выполнения контрольной</p>
         """
         instruction_label = QLabel(instruction_text)
         instruction_label.setWordWrap(True)
