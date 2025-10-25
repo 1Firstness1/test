@@ -1,9 +1,6 @@
 """
 Модуль для работы с данными театра в базе данных PostgreSQL.
 Содержит классы для хранения, доступа и манипуляции данными.
-ИСПРАВЛЕНЫ БАГИ: #5 (SQL Injection) через параметризованные запросы
-ИСПРАВЛЕНЫ НОВЫЕ БАГИ: Transaction handling, JOIN columns, table_name escaping
-ИСПРАВЛЕНА ПОДДЕРЖКА КИРИЛЛИЦЫ: Добавлено явное указание кодировки UTF-8
 """
 import psycopg2
 from psycopg2 import sql, extensions
@@ -91,13 +88,9 @@ class DatabaseManager:
             return False
 
         try:
-            # Добавлено явное указание кодировки UTF-8 для корректной работы с кириллицей
             self.connection = psycopg2.connect(**self.connection_params, client_encoding='UTF8')
             self.cursor = self.connection.cursor(cursor_factory=DictCursor)
-
-            # Установка кодировки для сессии (дополнительно)
-            self.cursor.execute("SET client_encoding TO 'UTF8'")
-            self.logger.info(f"Подключение к БД {self.connection_params['dbname']} успешно (UTF-8)")
+            self.logger.info(f"Подключение к БД {self.connection_params['dbname']} успешно")
             return True
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка подключения к БД: {str(e)}")
@@ -119,13 +112,10 @@ class DatabaseManager:
             postgres_params = self.connection_params.copy()
             postgres_params["dbname"] = "postgres"
 
-            # Добавлено указание кодировки UTF-8
             conn = psycopg2.connect(**postgres_params, client_encoding='UTF8')
             conn.autocommit = True
             cursor = conn.cursor()
-            # Установка кодировки для сессии
-            cursor.execute("SET client_encoding TO 'UTF8'")
-            self.logger.info(f"Подключение к системной БД postgres успешно (UTF-8)")
+            self.logger.info(f"Подключение к системной БД postgres успешно")
             return conn, cursor
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка подключения к системной БД postgres: {str(e)}")
@@ -150,9 +140,8 @@ class DatabaseManager:
             exists = cursor.fetchone()
 
             if not exists:
-                # Создаем БД если она не существует, с явным указанием кодировки UTF-8
-                cursor.execute(sql.SQL("CREATE DATABASE {} ENCODING 'UTF8'").format(sql.Identifier(dbname)))
-                self.logger.info(f"База данных {dbname} успешно создана (UTF-8)")
+                cursor.execute(sql.SQL("CREATE DATABASE {} ENCODING 'UTF8' LC_COLLATE 'ru_RU.UTF-8' LC_CTYPE 'ru_RU.UTF-8' TEMPLATE template0").format(sql.Identifier(dbname)))
+                self.logger.info(f"База данных {dbname} успешно создана")
             else:
                 self.logger.info(f"База данных {dbname} уже существует")
 
@@ -967,14 +956,16 @@ class DatabaseManager:
             list: Список имен таблиц
         """
         try:
-            self.cursor.execute("""
+            self.cursor.execute(
+                """
                 SELECT table_name 
                 FROM information_schema.tables 
                 WHERE table_schema = 'public' 
                 AND table_type = 'BASE TABLE'
-                AND table_name != 'task'
+                AND table_name NOT IN ('actors', 'performances', 'plots', 'game_data', 'actor_performances')
                 ORDER BY table_name
-            """)
+                """
+            )
             return [row[0] for row in self.cursor.fetchall()]
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения списка таблиц: {str(e)}")
@@ -992,7 +983,8 @@ class DatabaseManager:
             list: Список словарей с информацией о столбцах
         """
         try:
-            self.cursor.execute("""
+            self.cursor.execute(
+                """
                 SELECT 
                     column_name, 
                     data_type, 
@@ -1002,7 +994,9 @@ class DatabaseManager:
                 FROM information_schema.columns 
                 WHERE table_name = %s
                 ORDER BY ordinal_position
-            """, (table_name,))
+                """,
+                (table_name,),
+            )
 
             columns = []
             for row in self.cursor.fetchall():
@@ -1019,7 +1013,6 @@ class DatabaseManager:
             self.connection.rollback()
             return []
 
-    # ✅ БАГ #5: Использование параметризованных запросов
     def execute_select_query(self, query, params=None):
         """
         Выполнение SELECT запроса.
@@ -1046,7 +1039,84 @@ class DatabaseManager:
             self.connection.rollback()
             return []
 
-    # ✅ БАГ #5: Использование параметризованных запросов везде
+    def execute_update_query(self, query, params=None):
+        """
+        Выполнение произвольного UPDATE запроса.
+
+        Args:
+            query: SQL запрос
+            params: Параметры запроса
+
+        Returns:
+            tuple: (успех операции (bool), сообщение об ошибке (str))
+        """
+        try:
+            if not query or not query.strip():
+                self.logger.warning("Попытка выполнить пустой запрос")
+                return False, "Пустой запрос"
+
+            if params:
+                self.cursor.execute(query, params)
+            else:
+                self.cursor.execute(query)
+            self.connection.commit()
+            self.logger.info(f"Выполнен UPDATE запрос: {self.cursor.rowcount} строк обновлено")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            error_msg = str(e)
+            self.logger.error(f"Ошибка выполнения UPDATE запроса: {error_msg}")
+            return False, error_msg
+
+    def create_table(self, table_name, columns):
+        """
+        Создание новой таблицы.
+
+        Args:
+            table_name: Имя таблицы
+            columns: Список словарей с информацией о столбцах [{'name': 'col1', 'type': 'INTEGER'}, ...]
+
+        Returns:
+            tuple: (успех операции (bool), сообщение об ошибке (str))
+        """
+        try:
+            column_definitions = []
+            for col in columns:
+                column_definitions.append(f"{sql.Identifier(col['name']).as_string(self.cursor)} {col['type']}")
+            
+            query = f"CREATE TABLE {sql.Identifier(table_name).as_string(self.cursor)} ({', '.join(column_definitions)})"
+            self.cursor.execute(query)
+            self.connection.commit()
+            self.logger.info(f"Создана таблица {table_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            error_msg = str(e)
+            self.logger.error(f"Ошибка создания таблицы {table_name}: {error_msg}")
+            return False, error_msg
+
+    def drop_table(self, table_name):
+        """
+        Удаление таблицы.
+
+        Args:
+            table_name: Имя таблицы
+
+        Returns:
+            tuple: (успех операции (bool), сообщение об ошибке (str))
+        """
+        try:
+            query = f"DROP TABLE IF EXISTS {sql.Identifier(table_name).as_string(self.cursor)} CASCADE"
+            self.cursor.execute(query)
+            self.connection.commit()
+            self.logger.info(f"Удалена таблица {table_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            error_msg = str(e)
+            self.logger.error(f"Ошибка удаления таблицы {table_name}: {error_msg}")
+            return False, error_msg
+
     def get_table_data(self, table_name, columns=None, where=None, order_by=None, group_by=None, having=None,
                        params=None):
         """
@@ -1067,7 +1137,6 @@ class DatabaseManager:
         try:
             cols = ', '.join(columns) if columns else '*'
 
-            # ✅ ИСПРАВЛЕНО: Правильное экранирование имени таблицы
             table_identifier = sql.Identifier(table_name)
             query = f"SELECT {cols} FROM {table_identifier.as_string(self.cursor)}"
 
@@ -1392,7 +1461,6 @@ class DatabaseManager:
             list: Результаты запроса
         """
         try:
-            # ✅ ИСПРАВЛЕНО: Правильное построение SELECT для JOIN
             # Не добавляем * автоматически, используем только указанные столбцы
             cols = ', '.join(selected_columns)
 
@@ -1416,10 +1484,7 @@ class DatabaseManager:
             if order_by:
                 query += f" ORDER BY {order_by}"
 
-            # Устанавливаем явную кодировку UTF-8 для текущей сессии
-            self.cursor.execute("SET client_encoding TO 'UTF8'")
-
-            self.logger.info(f"Выполнение JOIN запроса (UTF-8): {query}")
+            self.logger.info(f"Выполнение JOIN запроса: {query}")
             self.cursor.execute(query)
 
             result = self.cursor.fetchall()
