@@ -430,6 +430,18 @@ class TheaterController:
         """Выполнение произвольного SELECT запроса."""
         return self.db.execute_select_query(query, params)
 
+    def execute_update(self, query, params=None):
+        """Выполнение произвольного UPDATE запроса."""
+        return self.db.execute_update_query(query, params)
+
+    def create_table(self, table_name, columns):
+        """Создание новой таблицы."""
+        return self.db.create_table(table_name, columns)
+
+    def drop_table(self, table_name):
+        """Удаление таблицы."""
+        return self.db.drop_table(table_name)
+
 
 # Вспомогательные классы для таблиц
 
@@ -479,6 +491,54 @@ class CurrencyTableItem(QTableWidgetItem):
         """Сравнение по числовому значению, а не по тексту."""
         if hasattr(other, 'value'):
             return self.value < other.value
+        return super().__lt__(other)
+
+
+class DateTableItem(QTableWidgetItem):
+    """
+    Элемент таблицы для дат с правильной сортировкой.
+    """
+
+    def __init__(self, text, date_value):
+        super().__init__(text)
+        self.date_value = date_value
+
+    def __lt__(self, other):
+        """Сравнение по дате, а не по тексту."""
+        if hasattr(other, 'date_value'):
+            return self.date_value < other.date_value
+        return super().__lt__(other)
+
+
+class BooleanTableItem(QTableWidgetItem):
+    """
+    Элемент таблицы для булевых значений с правильной сортировкой.
+    """
+
+    def __init__(self, text, bool_value):
+        super().__init__(text)
+        self.bool_value = bool_value
+
+    def __lt__(self, other):
+        """Сравнение по булевому значению (False < True)."""
+        if hasattr(other, 'bool_value'):
+            return self.bool_value < other.bool_value
+        return super().__lt__(other)
+
+
+class TimestampTableItem(QTableWidgetItem):
+    """
+    Элемент таблицы для временных меток с правильной сортировкой.
+    """
+
+    def __init__(self, text, timestamp_value):
+        super().__init__(text)
+        self.timestamp_value = timestamp_value
+
+    def __lt__(self, other):
+        """Сравнение по временной метке, а не по тексту."""
+        if hasattr(other, 'timestamp_value'):
+            return self.timestamp_value < other.timestamp_value
         return super().__lt__(other)
 
 
