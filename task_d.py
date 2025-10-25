@@ -1,21 +1,20 @@
 """
 Модуль диалога для расширенной работы с таблицами БД.
 Содержит класс TaskDialog с возможностями управления данными и структурой таблиц.
-ИСПРАВЛЕНЫ БАГИ: #1, #2, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13
-ИСПРАВЛЕНЫ НОВЫЕ БАГИ: JOIN columns, string functions case handling, transaction rollback, empty column sorting,
-table disappearing on sort, column selection
 """
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                               QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
                               QComboBox, QLineEdit, QMenu, QInputDialog, QCheckBox,
                               QSpinBox, QFormLayout, QTextEdit, QDialogButtonBox, QWidget,
-                              QScrollArea, QRadioButton, QButtonGroup, QGroupBox)
-from PySide6.QtCore import Qt
+                              QScrollArea, QRadioButton, QButtonGroup, QGroupBox,
+                              QDateEdit, QDoubleSpinBox, QTimeEdit)
+from PySide6.QtCore import Qt, QDate, QTime
 from PySide6.QtGui import QAction
-from controller import NumericTableItem
+from controller import NumericTableItem, DateTableItem, BooleanTableItem, TimestampTableItem, ValidatedLineEdit
 from logger import Logger
 import psycopg2
 import re
+from datetime import datetime, date
 
 
 class TaskDialog(QDialog):
@@ -41,11 +40,24 @@ class TaskDialog(QDialog):
         self.is_join_mode = False
         # Словарь для сохранения оригинальных имен столбцов
         self.original_column_names = {}
+        
+        # Переменные для хранения имен таблиц task1 и task2
+        self.task1_table_name = "task1"
+        self.task2_table_name = "task2"
 
         self.setWindowTitle("Техническое задание - Управление БД")
         self.setMinimumSize(1200, 700)
 
         self.setup_ui()
+
+    def update_table_name(self, old_name, new_name):
+        """Обновление имени таблицы в переменных."""
+        if old_name == self.task1_table_name:
+            self.task1_table_name = new_name
+            self.logger.info(f"Обновлено имя таблицы task1: {old_name} -> {new_name}")
+        elif old_name == self.task2_table_name:
+            self.task2_table_name = new_name
+            self.logger.info(f"Обновлено имя таблицы task2: {old_name} -> {new_name}")
 
     def setup_ui(self):
         """Настройка пользовательского интерфейса."""
@@ -87,6 +99,11 @@ class TaskDialog(QDialog):
         self.search_btn.clicked.connect(self.show_search_dialog)
         buttons_layout.addWidget(self.search_btn)
 
+        # Кнопка сброса фильтров
+        self.reset_filters_btn = QPushButton("Сбросить фильтры")
+        self.reset_filters_btn.clicked.connect(self.reset_all_filters)
+        buttons_layout.addWidget(self.reset_filters_btn)
+
         # Кнопка редактирования
         self.edit_btn = QPushButton("Редактировать")
         self.edit_btn.clicked.connect(self.show_edit_menu)
@@ -104,10 +121,10 @@ class TaskDialog(QDialog):
 
         buttons_layout.addStretch()
 
-        # ✅ БАГ #2: Кнопка сброса фильтров
-        self.reset_filters_btn = QPushButton("Сбросить фильтры")
-        self.reset_filters_btn.clicked.connect(self.reset_all_filters)
-        buttons_layout.addWidget(self.reset_filters_btn)
+        # Кнопка обновления таблиц
+        self.refresh_tables_btn = QPushButton("Обновить таблицы")
+        self.refresh_tables_btn.clicked.connect(self.refresh_tables)
+        buttons_layout.addWidget(self.refresh_tables_btn)
 
         # Кнопка вывода данных
         self.display_btn = QPushButton("Вывод")
@@ -129,7 +146,6 @@ class TaskDialog(QDialog):
         else:
             self.status_label.setText("<b>Статус:</b> Таблица не выбрана")
 
-    # ✅ БАГ #2: Новый метод для сброса фильтров
     def reset_all_filters(self):
         """Сброс всех фильтров и перезагрузка таблицы."""
         if not self.current_table:
@@ -152,7 +168,107 @@ class TaskDialog(QDialog):
         QMessageBox.information(self, "Успех", "Все фильтры и соединения сброшены")
         self.logger.info(f"Фильтры сброшены для таблицы {self.current_table}")
 
-    # ✅ БАГ #5: Предзаполнение данных из выбранной ячейки
+    def refresh_tables(self):
+        """Обновление таблиц task1 и task2 с тестовыми данными."""
+        try:
+            # Проверяем существование таблиц и переименовываем если нужно
+            existing_tables = self.controller.get_all_tables()
+            
+            # Обрабатываем task1
+            if self.task1_table_name in existing_tables:
+                # Удаляем существующую таблицу
+                self.controller.drop_table(self.task1_table_name)
+                self.logger.info(f"Удалена существующая таблица {self.task1_table_name}")
+            
+            # Обрабатываем task2  
+            if self.task2_table_name in existing_tables:
+                # Удаляем существующую таблицу
+                self.controller.drop_table(self.task2_table_name)
+                self.logger.info(f"Удалена существующая таблица {self.task2_table_name}")
+            
+            # Создаем таблицу task1
+            self.create_task1_table()
+            
+            # Создаем таблицу task2
+            self.create_task2_table()
+            
+            QMessageBox.information(self, "Успех", f"Таблицы {self.task1_table_name} и {self.task2_table_name} успешно обновлены")
+            self.logger.info(f"Таблицы {self.task1_table_name} и {self.task2_table_name} успешно обновлены")
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка обновления таблиц: {str(e)}")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось обновить таблицы:\n{str(e)}")
+
+    def create_task1_table(self):
+        """Создание таблицы task1 с тестовыми данными."""
+        # Создаем таблицу
+        self.controller.create_table(self.task1_table_name, [
+            {'name': 'id', 'type': 'SERIAL PRIMARY KEY'},
+            {'name': 'name', 'type': 'VARCHAR(100) NOT NULL'},
+            {'name': 'description', 'type': 'TEXT'},
+            {'name': 'price', 'type': 'NUMERIC(10,2)'},
+            {'name': 'quantity', 'type': 'INTEGER'},
+            {'name': 'is_active', 'type': 'BOOLEAN DEFAULT true'},
+            {'name': 'created_date', 'type': 'DATE DEFAULT CURRENT_DATE'},
+            {'name': 'updated_at', 'type': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'}
+        ])
+        
+        # Заполняем тестовыми данными
+        test_data = [
+            ('Товар 1', 'Описание товара 1', 1500.50, 10, True, '2024-01-15', '2024-01-15 10:30:00'),
+            ('Товар 2', 'Описание товара 2', 2300.75, 5, True, '2024-01-16', '2024-01-16 14:20:00'),
+            ('Товар 3', 'Описание товара 3', 800.25, 20, False, '2024-01-17', '2024-01-17 09:15:00'),
+            ('Товар 4', 'Описание товара 4', 3500.00, 3, True, '2024-01-18', '2024-01-18 16:45:00'),
+            ('Товар 5', 'Описание товара 5', 1200.80, 15, True, '2024-01-19', '2024-01-19 11:30:00')
+        ]
+        
+        for data in test_data:
+            self.controller.insert_row(self.task1_table_name, {
+                'name': data[0],
+                'description': data[1], 
+                'price': data[2],
+                'quantity': data[3],
+                'is_active': data[4],
+                'created_date': data[5],
+                'updated_at': data[6]
+            })
+
+    def create_task2_table(self):
+        """Создание таблицы task2 с тестовыми данными."""
+        # Создаем таблицу
+        self.controller.create_table(self.task2_table_name, [
+            {'name': 'id', 'type': 'SERIAL PRIMARY KEY'},
+            {'name': 'title', 'type': 'VARCHAR(200) NOT NULL'},
+            {'name': 'content', 'type': 'TEXT'},
+            {'name': 'priority', 'type': 'INTEGER CHECK (priority BETWEEN 1 AND 5)'},
+            {'name': 'status', 'type': 'VARCHAR(50) DEFAULT \'pending\''},
+            {'name': 'due_date', 'type': 'DATE'},
+            {'name': 'completed', 'type': 'BOOLEAN DEFAULT false'},
+            {'name': 'tags', 'type': 'TEXT[]'},
+            {'name': 'metadata', 'type': 'JSONB'}
+        ])
+        
+        # Заполняем тестовыми данными
+        test_data = [
+            ('Задача 1', 'Содержимое задачи 1', 3, 'in_progress', '2024-02-15', False, ['важно', 'срочно'], '{"author": "Иван", "department": "IT"}'),
+            ('Задача 2', 'Содержимое задачи 2', 1, 'completed', '2024-02-10', True, ['тестирование'], '{"author": "Петр", "department": "QA"}'),
+            ('Задача 3', 'Содержимое задачи 3', 5, 'pending', '2024-02-20', False, ['разработка'], '{"author": "Мария", "department": "Dev"}'),
+            ('Задача 4', 'Содержимое задачи 4', 2, 'in_progress', '2024-02-12', False, ['документация'], '{"author": "Анна", "department": "Docs"}'),
+            ('Задача 5', 'Содержимое задачи 5', 4, 'pending', '2024-02-25', False, ['анализ'], '{"author": "Сергей", "department": "Analytics"}')
+        ]
+        
+        for data in test_data:
+            self.controller.insert_row(self.task2_table_name, {
+                'title': data[0],
+                'content': data[1],
+                'priority': data[2], 
+                'status': data[3],
+                'due_date': data[4],
+                'completed': data[5],
+                'tags': data[6],
+                'metadata': data[7]
+            })
+
     def on_cell_double_clicked(self, row, column):
         """Обработка двойного клика по ячейке для открытия диалога группировки."""
         if not self.current_table or column >= len(self.current_columns):
@@ -183,7 +299,6 @@ class TaskDialog(QDialog):
                 having=self.current_having
             )
 
-    # ✅ БАГ #6: Исправлена сортировка для JOIN таблиц и пустых столбцов
     def on_column_header_clicked(self, logical_index):
         """Обработка клика по заголовку столбца для сортировки."""
         if not self.current_table or logical_index >= len(self.current_columns):
@@ -215,7 +330,6 @@ class TaskDialog(QDialog):
 
         self.current_sort_order = {column_name: order}
 
-        # ✅ БАГ: Правильная сортировка для JOIN таблиц
         if self.is_join_mode:
             # Находим оригинальное имя столбца для соединенной таблицы
             if column_name in self.original_column_names:
@@ -247,7 +361,6 @@ class TaskDialog(QDialog):
 
         dialog = SearchDialog(self.controller, self.current_table, self.all_columns_info, self)
         if dialog.exec_():
-            # ✅ БАГ #5: Использовать параметризованный запрос
             self.current_where = dialog.search_condition
             self.load_table_data_filtered(
                 where=dialog.search_condition,
@@ -263,7 +376,6 @@ class TaskDialog(QDialog):
         dialog = EditMenuDialog(self.controller, self.current_table, self.all_columns_info,
                                self.data_table, self)
         if dialog.exec_():
-            # ✅ БАГ #3: Очистить кэш перед перезагрузкой
             self.current_columns = []
             self.all_columns_info = self.controller.get_table_columns(self.current_table)
             self.load_table_data_filtered(
@@ -281,7 +393,6 @@ class TaskDialog(QDialog):
 
         dialog = AddMenuDialog(self.controller, self.current_table, self.all_columns_info, self)
         if dialog.exec_():
-            # ✅ БАГ #3: Очистить кэш перед перезагрузкой
             self.current_columns = []
             self.all_columns_info = self.controller.get_table_columns(self.current_table)
             self.load_table_data_filtered(
@@ -291,7 +402,6 @@ class TaskDialog(QDialog):
                 having=self.current_having
             )
 
-    # ✅ БАГ #4: Предустановка столбца для удаления
     def show_delete_menu(self):
         """Показ меню удаления как отдельный диалог."""
         if not self.current_table:
@@ -309,7 +419,6 @@ class TaskDialog(QDialog):
         dialog = DeleteMenuDialog(self.controller, self.current_table, self.all_columns_info,
                                  self.data_table, selected_column, self)
         if dialog.exec_():
-            # ✅ БАГ #3: Очистить кэш перед перезагрузкой
             self.current_columns = []
             self.all_columns_info = self.controller.get_table_columns(self.current_table)
             self.load_table_data_filtered(
@@ -319,7 +428,6 @@ class TaskDialog(QDialog):
                 having=self.current_having
             )
 
-    # ✅ БАГ #9: Полная очистка таблицы перед заполнением
     def load_table_data_filtered(self, columns=None, where=None, order_by=None, group_by=None, having=None, params=None):
         """Загрузка данных таблицы с фильтрацией."""
         if not self.current_table:
@@ -352,7 +460,6 @@ class TaskDialog(QDialog):
                     params
                 )
 
-            # ✅ БАГ #9: Очистить таблицу перед заполнением для избежания утечек памяти
             self.data_table.clearSpans()
             self.data_table.setRowCount(0)
 
@@ -364,9 +471,20 @@ class TaskDialog(QDialog):
                 for col_idx, value in enumerate(row_data):
                     str_value = str(value) if value is not None else ""
 
+                    # Определяем тип данных и создаем соответствующий элемент таблицы
                     if isinstance(value, (int, float)):
                         item = NumericTableItem(str_value, value)
+                    elif isinstance(value, date):
+                        # Для дат используем специальный элемент
+                        item = DateTableItem(str_value, value)
+                    elif isinstance(value, datetime):
+                        # Для временных меток используем специальный элемент
+                        item = TimestampTableItem(str_value, value)
+                    elif isinstance(value, bool):
+                        # Для булевых значений используем специальный элемент
+                        item = BooleanTableItem(str_value, value)
                     else:
+                        # Для всех остальных типов (строки, тексты и т.д.)
                         item = QTableWidgetItem(str_value)
 
                     self.data_table.setItem(row_idx, col_idx, item)
@@ -379,8 +497,7 @@ class TaskDialog(QDialog):
 
     def show_display_options(self):
         """Показ опций вывода данных с выбором таблицы."""
-        # ✅ БАГ #1: Всегда получать свежие данные
-        dialog = DisplayOptionsDialog(self.controller, self.current_table, self)
+        dialog = DisplayOptionsDialog(self.controller, self.current_table, self, self)
         if dialog.exec_():
             self.current_table = dialog.selected_table
             self.join_tables = dialog.join_tables
@@ -406,7 +523,6 @@ class TaskDialog(QDialog):
                 self.current_columns = dialog.selected_columns if dialog.selected_columns else [col['name'] for col in self.all_columns_info]
                 self.load_table_data_filtered(columns=self.current_columns)
 
-    # ✅ БАГ #7: Улучшенная обработка ошибок и сохранение оригинальных имен столбцов
     def execute_join_display(self, join_config):
         """Выполнение и отображение результатов JOIN."""
         try:
@@ -440,7 +556,23 @@ class TaskDialog(QDialog):
                 for row_idx, row_data in enumerate(results):
                     for col_idx, value in enumerate(row_data):
                         str_value = str(value) if value is not None else ""
-                        item = QTableWidgetItem(str_value)
+
+                        # Определяем тип данных и создаем соответствующий элемент таблицы
+                        if isinstance(value, (int, float)):
+                            item = NumericTableItem(str_value, value)
+                        elif isinstance(value, date):
+                            # Для дат используем специальный элемент
+                            item = DateTableItem(str_value, value)
+                        elif isinstance(value, datetime):
+                            # Для временных меток используем специальный элемент
+                            item = TimestampTableItem(str_value, value)
+                        elif isinstance(value, bool):
+                            # Для булевых значений используем специальный элемент
+                            item = BooleanTableItem(str_value, value)
+                        else:
+                            # Для всех остальных типов (строки, тексты и т.д.)
+                            item = QTableWidgetItem(str_value)
+
                         self.data_table.setItem(row_idx, col_idx, item)
 
                 self.logger.info(f"Выполнен JOIN запрос: {len(results)} строк")
@@ -531,7 +663,6 @@ class EditMenuDialog(QDialog):
             self.action_taken = True
             self.accept()
 
-    # ✅ БАГ #6: Проверка на пустую таблицу
     def edit_record(self):
         """Редактирование записи."""
         if not self.data_table.rowCount():
@@ -629,7 +760,6 @@ class AddMenuDialog(QDialog):
         self.accept()
 
 
-# ✅ БАГ #4: Предустановка столбца для удаления
 class DeleteMenuDialog(QDialog):
     """Диалог меню удаления."""
     def __init__(self, controller, table_name, columns_info, data_table, selected_column=None, parent=None):
@@ -675,7 +805,6 @@ class DeleteMenuDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    # ✅ БАГ #4: Передаем выбранный столбец в диалог удаления столбца
     def delete_column(self):
         """Удаление столбца."""
         dialog = DeleteColumnDialog(self.controller, self.table_name, self.columns_info,
@@ -684,7 +813,6 @@ class DeleteMenuDialog(QDialog):
             self.action_taken = True
             self.accept()
 
-    # ✅ БАГ #6: Проверка на пустую таблицу
     def delete_record(self):
         """Удаление записи."""
         if not self.data_table.rowCount():
@@ -803,7 +931,6 @@ class AddColumnDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Не удалось добавить столбец:\n{error}")
 
 
-# ✅ БАГ #4: Использование предвыбранного столбца
 class EditColumnDialog(QDialog):
     """Диалог редактирования столбца."""
     def __init__(self, controller, table_name, columns_info, selected_column=None, parent=None):
@@ -958,7 +1085,6 @@ class EditColumnDialog(QDialog):
                 QMessageBox.critical(self, "Ошибка", f"Не удалось снять ограничение:\n{error}")
 
 
-# ✅ БАГ #4: Использование предвыбранного столбца
 class DeleteColumnDialog(QDialog):
     """Диалог для удаления столбца."""
     def __init__(self, controller, table_name, columns_info, selected_column=None, parent=None):
@@ -1029,9 +1155,8 @@ class DeleteColumnDialog(QDialog):
                 QMessageBox.critical(self, "Ошибка", f"Не удалось удалить столбец:\n{error}")
 
 
-# ✅ БАГ #10: Улучшенная валидация NOT NULL
 class AddRecordDialog(QDialog):
-    """Диалог добавления новой записи."""
+    """Диалог добавления новой записи с улучшенным интерфейсом."""
     def __init__(self, controller, table_name, columns_info, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -1050,44 +1175,120 @@ class AddRecordDialog(QDialog):
         self.move(screen.center() - self.rect().center())
 
     def setup_ui(self):
-        """Настройка UI."""
+        """Настройка UI с улучшенным дизайном."""
         layout = QFormLayout(self)
 
+        # Стиль для меток
+        label_style = "color: #333333; font-weight: bold;"
+
         for col in self.columns_info:
+            # Пропускаем SERIAL поля
             if 'serial' in col.get('type', '').lower() or 'nextval' in str(col.get('default', '')).lower():
                 continue
 
-            widget = QLineEdit()
-            if col.get('default'):
+            col_name = col['name']
+            col_type = col.get('type', '').lower()
+            is_nullable = col.get('nullable', True)
+            
+            # Создаем метку
+            label = QLabel(f"{col_name}:")
+            label.setStyleSheet(label_style)
+            if not is_nullable:
+                label.setText(f"{col_name} *")
+            
+            # Создаем виджет в зависимости от типа данных
+            widget = self.create_widget_for_type(col_type, col)
+            self.field_widgets[col_name] = widget
+            
+            # Устанавливаем значение по умолчанию
+            if col.get('default') and hasattr(widget, 'setPlaceholderText'):
                 widget.setPlaceholderText(f"По умолчанию: {col['default']}")
+            
+            layout.addRow(label, widget)
 
-            self.field_widgets[col['name']] = widget
-            label_text = col['name']
-            if not col.get('nullable', True):
-                label_text += " *"
-            layout.addRow(f"{label_text}:", widget)
+        # Кнопки действий
+        buttons_layout = QHBoxLayout()
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept_dialog)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        cancel_btn = QPushButton("Отмена")
+        cancel_btn.clicked.connect(self.reject)
+        buttons_layout.addWidget(cancel_btn)
 
-    def accept_dialog(self):
-        """Принятие диалога с валидацией."""
+        save_btn = QPushButton("Сохранить")
+        save_btn.clicked.connect(self.validate_and_accept)
+        buttons_layout.addWidget(save_btn)
+
+        layout.addRow("", buttons_layout)
+
+    def create_widget_for_type(self, col_type, col_info):
+        """Создание виджета в зависимости от типа данных."""
+        if 'int' in col_type or 'serial' in col_type:
+            widget = QSpinBox()
+            widget.setRange(-2147483648, 2147483647)
+            return widget
+        elif 'numeric' in col_type or 'decimal' in col_type or 'real' in col_type or 'double' in col_type:
+            widget = QDoubleSpinBox()
+            widget.setRange(-999999999.99, 999999999.99)
+            widget.setDecimals(2)
+            return widget
+        elif 'bool' in col_type:
+            widget = QCheckBox()
+            return widget
+        elif 'date' in col_type:
+            widget = QDateEdit()
+            widget.setDate(QDate.currentDate())
+            widget.setCalendarPopup(True)
+            return widget
+        elif 'timestamp' in col_type or 'time' in col_type:
+            widget = QTimeEdit()
+            widget.setTime(QTime.currentTime())
+            return widget
+        elif 'text' in col_type or 'varchar' in col_type or 'char' in col_type:
+            widget = ValidatedLineEdit(self.controller)
+            return widget
+        else:
+            # По умолчанию используем текстовое поле
+            widget = ValidatedLineEdit(self.controller)
+            return widget
+
+    def get_widget_value(self, widget, col_type):
+        """Получение значения из виджета в зависимости от его типа."""
+        if isinstance(widget, QSpinBox):
+            return widget.value()
+        elif isinstance(widget, QDoubleSpinBox):
+            return widget.value()
+        elif isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        elif isinstance(widget, QDateEdit):
+            if 'timestamp' in col_type.lower():
+                # Для timestamp возвращаем дату и время
+                date = widget.date().toPython()
+                return date.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                # Для обычной даты
+                return widget.date().toPython()
+        elif isinstance(widget, QTimeEdit):
+            return widget.time().toString("HH:mm:ss")
+        else:
+            return widget.text().strip()
+
+    def validate_and_accept(self):
+        """Валидация введенных данных и закрытие диалога с принятием."""
         data = {}
         errors = []
 
         for col in self.columns_info:
             col_name = col['name']
+            col_type = col.get('type', '').lower()
+            is_nullable = col.get('nullable', True)
             widget = self.field_widgets.get(col_name)
 
             if not widget:
                 continue
 
-            value = widget.text().strip()
+            value = self.get_widget_value(widget, col_type)
 
-            # ✅ БАГ #10: Проверка NOT NULL
-            if not value and not col.get('nullable', True):
+            # Проверка обязательных полей
+            if not value and not is_nullable:
                 errors.append(f"Поле '{col_name}' обязательно для заполнения")
 
             if value:
@@ -1110,9 +1311,8 @@ class AddRecordDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Не удалось добавить запись:\n{error}")
 
 
-# ✅ БАГ #10: Улучшенная валидация NOT NULL
 class EditRecordDialog(QDialog):
-    """Диалог редактирования записи."""
+    """Диалог редактирования записи с улучшенным интерфейсом."""
     def __init__(self, controller, table_name, columns_info, current_data, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -1132,33 +1332,163 @@ class EditRecordDialog(QDialog):
         self.move(screen.center() - self.rect().center())
 
     def setup_ui(self):
-        """Настройка UI."""
+        """Настройка UI с улучшенным дизайном."""
         layout = QFormLayout(self)
+
+        # Стиль для меток
+        label_style = "color: #333333; font-weight: bold;"
 
         for col in self.columns_info:
             col_name = col['name']
-            widget = QLineEdit()
-
-            if col_name in self.current_data:
-                widget.setText(str(self.current_data[col_name]))
-
+            col_type = col.get('type', '').lower()
+            is_nullable = col.get('nullable', True)
+            
+            # Создаем метку
+            label = QLabel(f"{col_name}:")
+            label.setStyleSheet(label_style)
+            if not is_nullable:
+                label.setText(f"{col_name} *")
+            
+            # Создаем виджет в зависимости от типа данных
+            widget = self.create_widget_for_type(col_type, col)
             self.field_widgets[col_name] = widget
-
+            
+            # Заполняем текущими данными
+            if col_name in self.current_data:
+                self.set_widget_value(widget, self.current_data[col_name], col_type)
+            
+            # Первый столбец (обычно ID) делаем только для чтения
             if col_name == self.columns_info[0]['name']:
-                widget.setReadOnly(True)
-                widget.setStyleSheet("background-color: #f0f0f0;")
+                if hasattr(widget, 'setReadOnly'):
+                    widget.setReadOnly(True)
+                    widget.setStyleSheet("background-color: #f0f0f0;")
+                elif hasattr(widget, 'setEnabled'):
+                    widget.setEnabled(False)
+                    widget.setStyleSheet("background-color: #f0f0f0;")
+            
+            layout.addRow(label, widget)
 
-            layout.addRow(f"{col_name}:", widget)
+        # Кнопки действий
+        buttons_layout = QHBoxLayout()
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept_dialog)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        cancel_btn = QPushButton("Отмена")
+        cancel_btn.clicked.connect(self.reject)
+        buttons_layout.addWidget(cancel_btn)
 
-    def accept_dialog(self):
-        """Принятие диалога с валидацией."""
+        save_btn = QPushButton("Сохранить")
+        save_btn.clicked.connect(self.validate_and_accept)
+        buttons_layout.addWidget(save_btn)
+
+        layout.addRow("", buttons_layout)
+
+    def create_widget_for_type(self, col_type, col_info):
+        """Создание виджета в зависимости от типа данных."""
+        if 'int' in col_type or 'serial' in col_type:
+            widget = QSpinBox()
+            widget.setRange(-2147483648, 2147483647)
+            return widget
+        elif 'numeric' in col_type or 'decimal' in col_type or 'real' in col_type or 'double' in col_type:
+            widget = QDoubleSpinBox()
+            widget.setRange(-999999999.99, 999999999.99)
+            widget.setDecimals(2)
+            return widget
+        elif 'bool' in col_type:
+            widget = QCheckBox()
+            return widget
+        elif 'date' in col_type:
+            widget = QDateEdit()
+            widget.setCalendarPopup(True)
+            return widget
+        elif 'timestamp' in col_type:
+            # Для timestamp используем QDateEdit, так как он содержит и дату, и время
+            widget = QDateEdit()
+            widget.setCalendarPopup(True)
+            return widget
+        elif 'time' in col_type:
+            widget = QTimeEdit()
+            return widget
+        elif 'text' in col_type or 'varchar' in col_type or 'char' in col_type:
+            widget = ValidatedLineEdit(self.controller)
+            return widget
+        else:
+            # По умолчанию используем текстовое поле
+            widget = ValidatedLineEdit(self.controller)
+            return widget
+
+    def set_widget_value(self, widget, value, col_type):
+        """Установка значения в виджет в зависимости от его типа."""
+        if value is None:
+            return
+            
+        try:
+            if isinstance(widget, QSpinBox):
+                widget.setValue(int(value))
+            elif isinstance(widget, QDoubleSpinBox):
+                widget.setValue(float(value))
+            elif isinstance(widget, QCheckBox):
+                widget.setChecked(bool(value))
+            elif isinstance(widget, QDateEdit):
+                if isinstance(value, str):
+                    # Парсим строку даты (может быть дата или дата+время)
+                    if ' ' in value:
+                        # Это timestamp, берем только дату
+                        date_part = value.split()[0]
+                        date_obj = datetime.strptime(date_part, '%Y-%m-%d').date()
+                    else:
+                        # Это просто дата
+                        date_obj = datetime.strptime(value, '%Y-%m-%d').date()
+                    widget.setDate(QDate(date_obj.year, date_obj.month, date_obj.day))
+                elif isinstance(value, date):
+                    widget.setDate(QDate(value.year, value.month, value.day))
+                elif isinstance(value, datetime):
+                    widget.setDate(QDate(value.year, value.month, value.day))
+            elif isinstance(widget, QTimeEdit):
+                if isinstance(value, str):
+                    # Парсим строку времени (может быть время или дата+время)
+                    if ' ' in value:
+                        # Это timestamp, берем только время
+                        time_part = value.split()[1]
+                        time_obj = datetime.strptime(time_part, '%H:%M:%S').time()
+                    else:
+                        # Это просто время
+                        time_obj = datetime.strptime(value, '%H:%M:%S').time()
+                    widget.setTime(QTime(time_obj.hour, time_obj.minute, time_obj.second))
+                elif isinstance(value, datetime):
+                    widget.setTime(QTime(value.hour, value.minute, value.second))
+            else:
+                # Для текстовых полей
+                if hasattr(widget, 'setText'):
+                    widget.setText(str(value))
+        except (ValueError, TypeError) as e:
+            # Если не удалось преобразовать, используем текстовое представление
+            if hasattr(widget, 'setText'):
+                widget.setText(str(value))
+
+    def get_widget_value(self, widget, col_type):
+        """Получение значения из виджета в зависимости от его типа."""
+        if isinstance(widget, QSpinBox):
+            return widget.value()
+        elif isinstance(widget, QDoubleSpinBox):
+            return widget.value()
+        elif isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        elif isinstance(widget, QDateEdit):
+            if 'timestamp' in col_type.lower():
+                # Для timestamp возвращаем дату и время
+                date = widget.date().toPython()
+                return date.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                # Для обычной даты
+                return widget.date().toPython()
+        elif isinstance(widget, QTimeEdit):
+            return widget.time().toString("HH:mm:ss")
+        else:
+            return widget.text().strip()
+
+    def validate_and_accept(self):
+        """Валидация введенных данных и закрытие диалога с принятием."""
         first_col = self.columns_info[0]['name']
-        where_value = self.field_widgets[first_col].text()
+        where_value = self.get_widget_value(self.field_widgets[first_col], self.columns_info[0].get('type', '').lower())
 
         data = {}
         errors = []
@@ -1168,11 +1498,14 @@ class EditRecordDialog(QDialog):
                 continue
 
             col_name = col['name']
+            col_type = col.get('type', '').lower()
+            is_nullable = col.get('nullable', True)
             widget = self.field_widgets[col_name]
-            value = widget.text().strip()
 
-            # ✅ БАГ #10: Проверка NOT NULL
-            if not value and not col.get('nullable', True):
+            value = self.get_widget_value(widget, col_type)
+
+            # Проверка обязательных полей
+            if not value and not is_nullable:
                 errors.append(f"Поле '{col_name}' обязательно для заполнения")
 
             if value:
@@ -1198,7 +1531,6 @@ class EditRecordDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Не удалось обновить запись:\n{error}")
 
 
-# ✅ БАГ #5: Предзаполнение значений для группировки
 class GroupFilterDialog(QDialog):
     """Диалог группировки и фильтрации данных."""
     def __init__(self, controller, table_name, columns_info, selected_column, cell_value="", is_join_mode=False, parent=None):
@@ -1370,7 +1702,6 @@ class GroupFilterDialog(QDialog):
         self.accept()
 
 
-# ✅ БАГ #5: Параметризованный SearchDialog
 class SearchDialog(QDialog):
     """Диалог поиска по таблице с защитой от SQL Injection."""
 
@@ -1446,7 +1777,6 @@ class SearchDialog(QDialog):
 
         search_type = self.search_type_combo.currentText()
 
-        # ✅ БАГ #5: Использовать параметризованные запросы
         if "LIKE" in search_type:
             self.search_condition = f"{column} LIKE %s"
             self.search_params = [f"%{search_text}%"]
@@ -1472,10 +1802,11 @@ class SearchDialog(QDialog):
 class DisplayOptionsDialog(QDialog):
     """Диалог опций вывода данных."""
 
-    def __init__(self, controller, current_table=None, parent=None):
+    def __init__(self, controller, current_table=None, parent=None, task_dialog=None):
         super().__init__(parent)
         self.controller = controller
         self.current_table = current_table
+        self.task_dialog = task_dialog
 
         self.selected_table = current_table
         self.selected_columns = None
@@ -1525,13 +1856,15 @@ class DisplayOptionsDialog(QDialog):
 
     def select_table(self):
         """Выбор основной таблицы."""
-        dialog = SelectTableDialog(self.controller, self.selected_table, self)
+        dialog = SelectTableDialog(self.controller, self.selected_table, self, self.task_dialog)
         if dialog.exec_():
             self.selected_table = dialog.selected_table
             self.selected_columns = dialog.selected_columns
             self.is_join_mode = False
             self.join_tables = []
             self.join_conditions = []
+            # Закрываем оба диалога после выбора таблицы
+            self.accept()
 
     def add_join(self):
         """Добавление соединений."""
@@ -1545,6 +1878,8 @@ class DisplayOptionsDialog(QDialog):
             self.join_config = dialog.get_join_config()
             self.join_tables.append(self.join_config['join_conditions'][0]['table'])
             self.join_conditions.append(self.join_config['join_conditions'][0])
+            # Закрываем оба диалога после настройки соединений
+            self.accept()
 
     def apply_string_functions(self):
         """Применение строковых функций."""
@@ -1562,19 +1897,20 @@ class DisplayOptionsDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", "Выберите таблицу для вывода")
             return
 
+        # Закрываем оба диалога при нажатии OK
         self.accept()
 
 
-# ✅ БАГ #1: Всегда получать свежие данные при открытии
 class SelectTableDialog(QDialog):
     """Диалог выбора таблицы с отображением и выбором столбцов."""
 
-    def __init__(self, controller, current_table=None, parent=None):
+    def __init__(self, controller, current_table=None, parent=None, task_dialog=None):
         super().__init__(parent)
         self.controller = controller
         self.selected_table = current_table
         self.selected_columns = None
         self.scroll_area = None
+        self.task_dialog = task_dialog
 
         self.setWindowTitle("Выбрать таблицу")
         self.setMinimumWidth(500)
@@ -1600,7 +1936,10 @@ class SelectTableDialog(QDialog):
         tables = self.controller.get_all_tables()
         self.table_combo.addItems(tables)
 
-        if self.selected_table and self.selected_table in tables:
+        # Устанавливаем task1 как значение по умолчанию, если оно доступно
+        if 'task1' in tables:
+            self.table_combo.setCurrentText('task1')
+        elif self.selected_table and self.selected_table in tables:
             self.table_combo.setCurrentText(self.selected_table)
 
         self.table_combo.currentTextChanged.connect(self.on_table_changed)
@@ -1621,7 +1960,6 @@ class SelectTableDialog(QDialog):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
 
-        # ✅ БАГ #1: Всегда получать свежие данные
         current_columns = self.controller.get_table_columns(self.table_combo.currentText())
 
         for col in current_columns:
@@ -1645,7 +1983,6 @@ class SelectTableDialog(QDialog):
             columns = self.controller.get_table_columns(table_name)
             self.columns_checks.clear()
 
-            # ✅ БАГ #4: Использовать сохранённую ссылку на scroll_area
             if self.scroll_area:
                 scroll_widget = QWidget()
                 scroll_layout = QVBoxLayout(scroll_widget)
@@ -1679,6 +2016,10 @@ class SelectTableDialog(QDialog):
                 QMessageBox.information(self, "Успех", f"Таблица переименована: {old_name} → {new_name}")
                 current_index = self.table_combo.currentIndex()
                 self.table_combo.setItemText(current_index, new_name)
+                
+                # Обновляем переменные в TaskDialog, если он передан
+                if self.task_dialog:
+                    self.task_dialog.update_table_name(old_name, new_name)
             else:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось переименовать таблицу:\n{error}")
 
@@ -1691,7 +2032,6 @@ class SelectTableDialog(QDialog):
         self.accept()
 
 
-# ✅ БАГ #1: Исправлен JoinWizardDialog для отображения столбцов из всех таблиц
 class JoinWizardDialog(QDialog):
     """Мастер создания JOIN запросов."""
 
@@ -1730,6 +2070,11 @@ class JoinWizardDialog(QDialog):
         all_tables = self.controller.get_all_tables()
         other_tables = [t for t in all_tables if t != self.base_table]
         self.join_table_combo.addItems(other_tables)
+        
+        # Устанавливаем task2 как значение по умолчанию, если оно доступно
+        if 'task2' in other_tables:
+            self.join_table_combo.setCurrentText('task2')
+        
         self.join_table_combo.currentTextChanged.connect(self.update_join_columns)
         join_table_layout.addWidget(self.join_table_combo)
 
@@ -1764,7 +2109,6 @@ class JoinWizardDialog(QDialog):
 
         layout.addLayout(on_layout)
 
-        # ✅ БАГ #1: Добавляем группы для выбора столбцов обеих таблиц
         layout.addWidget(QLabel("<b>Выберите столбцы для вывода:</b>"))
 
         columns_layout = QHBoxLayout()
@@ -1909,7 +2253,6 @@ class JoinWizardDialog(QDialog):
         }
 
 
-# ✅ БАГ #3: Исправлена StringFunctionsDialog с возможностью применять функции к таблице
 class StringFunctionsDialog(QDialog):
     """Диалог работы со строковыми функциями."""
 
@@ -1986,7 +2329,6 @@ class StringFunctionsDialog(QDialog):
         apply_btn.clicked.connect(self.apply_function)
         buttons_layout.addWidget(apply_btn)
 
-        # ✅ БАГ #3: Добавляем кнопку для создания нового столбца с примененной функцией
         self.create_column_btn = QPushButton("Создать столбец с результатом")
         self.create_column_btn.clicked.connect(self.create_column_with_function)
         self.create_column_btn.setEnabled(False)  # Активируем после применения функции
@@ -2097,8 +2439,6 @@ class StringFunctionsDialog(QDialog):
                 QMessageBox.warning(self, "Ошибка", "Не удалось сформировать SQL выражение")
                 return
 
-            # Установка кодировки UTF-8 перед выполнением запроса
-            self.controller.execute_select("SET client_encoding TO 'UTF8'")
 
             # Используем параметризованный запрос
             query = f"SELECT {column} as original, {sql_expr} as result FROM \"{self.table_name}\" LIMIT 20"
@@ -2112,7 +2452,23 @@ class StringFunctionsDialog(QDialog):
                 for row_idx, row_data in enumerate(results):
                     for col_idx, value in enumerate(row_data):
                         str_value = str(value) if value is not None else ""
-                        item = QTableWidgetItem(str_value)
+
+                        # Определяем тип данных и создаем соответствующий элемент таблицы
+                        if isinstance(value, (int, float)):
+                            item = NumericTableItem(str_value, value)
+                        elif isinstance(value, date):
+                            # Для дат используем специальный элемент
+                            item = DateTableItem(str_value, value)
+                        elif isinstance(value, datetime):
+                            # Для временных меток используем специальный элемент
+                            item = TimestampTableItem(str_value, value)
+                        elif isinstance(value, bool):
+                            # Для булевых значений используем специальный элемент
+                            item = BooleanTableItem(str_value, value)
+                        else:
+                            # Для всех остальных типов (строки, тексты и т.д.)
+                            item = QTableWidgetItem(str_value)
+
                         self.result_table.setItem(row_idx, col_idx, item)
 
                 self.result_table.resizeColumnsToContents()
@@ -2163,22 +2519,25 @@ class StringFunctionsDialog(QDialog):
                 return
 
             # Затем обновляем его значениями из функции
-            # Установить UTF-8 кодировку перед выполнением запроса
-            self.controller.execute_select("SET CLIENT_ENCODING TO 'UTF8'")
-
             update_query = f"UPDATE \"{self.table_name}\" SET \"{new_column_name}\" = {sql_expr}"
-            try:
-                self.controller.execute_select(update_query)
+            success, error = self.controller.execute_update(update_query)
+            
+            if success:
                 QMessageBox.information(
                     self, "Успех",
                     f"Столбец '{new_column_name}' успешно создан и заполнен результатами функции."
                 )
                 self.logger.info(f"Создан столбец '{new_column_name}' с функцией {self.current_function}")
-            except Exception as e:
+                # Закрываем оба диалога после успешного создания столбца
+                self.accept()
+                # Если есть родительский диалог (DisplayOptionsDialog), закрываем и его
+                if hasattr(self.parent(), 'accept'):
+                    self.parent().accept()
+            else:
                 # В случае ошибки при обновлении пытаемся удалить столбец
                 self.controller.drop_column(self.table_name, new_column_name)
-                QMessageBox.critical(self, "Ошибка", f"Ошибка при заполнении столбца:\n{str(e)}")
-                self.logger.error(f"Ошибка при заполнении столбца '{new_column_name}': {str(e)}")
+                QMessageBox.critical(self, "Ошибка", f"Ошибка при заполнении столбца:\n{error}")
+                self.logger.error(f"Ошибка при заполнении столбца '{new_column_name}': {error}")
 
         except Exception as e:
             self.logger.error(f"Ошибка создания столбца: {str(e)}")
