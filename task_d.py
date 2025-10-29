@@ -1107,22 +1107,24 @@ class EditColumnDialog(QDialog):
                 QMessageBox.critical(self, "Ошибка", f"Не удалось изменить тип столбца:\n{error}")
 
     def set_constraint(self):
-        """Установка ограничения на столбец."""
+        """Установка ограничения на столбец (добавлен FOREIGN KEY)."""
+        column = self.get_current_column()
         if not self._ensure_column_selected():
             return
-        column = self.get_current_column()
 
-        constraints = ["NOT NULL", "UNIQUE", "CHECK"]
+        constraints = ["NOT NULL", "UNIQUE", "CHECK", "FOREIGN KEY"]
         constraint, ok = QInputDialog.getItem(
             self, "Установка ограничения",
             f"Выберите тип ограничения для '{column}':",
             constraints, 0, False
         )
-
         if not ok:
             return
 
         constraint_value = None
+        ref_table = None
+        ref_column = None
+
         if constraint == "CHECK":
             constraint_value, ok = QInputDialog.getText(
                 self, "Условие CHECK",
@@ -1130,35 +1132,54 @@ class EditColumnDialog(QDialog):
             )
             if not ok or not constraint_value:
                 return
+        elif constraint == "FOREIGN KEY":
+            # Просим ссылочную таблицу
+            ref_table, ok = QInputDialog.getText(
+                self, "FOREIGN KEY - таблица",
+                "Введите имя связанной таблицы (REFERENCES table):"
+            )
+            if not ok or not ref_table:
+                return
+            # Просим ссылочный столбец
+            ref_column, ok = QInputDialog.getText(
+                self, "FOREIGN KEY - столбец",
+                "Введите имя связанного столбца (REFERENCES table(column)):"
+            )
+            if not ok or not ref_column:
+                return
 
         success, error = self.controller.set_constraint(
-            self.table_name, column, constraint, constraint_value
+            self.table_name, column, constraint, constraint_value if constraint != "FOREIGN KEY" else (ref_table, ref_column)
         )
 
         if success:
-            QMessageBox.information(self, "Успех", f"Ограничение {constraint} установлено на столбец '{column}'")
+            QMessageBox.information(self, "Успех",
+                                    f"Ограничение {constraint} установлено на столбец '{column}'")
         else:
             QMessageBox.critical(self, "Ошибка", f"Не удалось установить ограничение:\n{error}")
 
+
     def drop_constraint(self):
-        """Снятие ограничения со столбца."""
+        """Снятие ограничения со столбца (добавлен FOREIGN KEY)."""
+        column = self.get_current_column()
         if not self._ensure_column_selected():
             return
-        column = self.get_current_column()
 
-        constraints = ["NOT NULL", "UNIQUE", "CHECK"]
+        constraints = ["NOT NULL", "UNIQUE", "CHECK", "FOREIGN KEY"]
         constraint, ok = QInputDialog.getItem(
             self, "Снятие ограничения",
             f"Выберите тип ограничения для снятия с '{column}':",
             constraints, 0, False
         )
+        if not ok:
+            return
 
-        if ok:
-            success, error = self.controller.drop_constraint(self.table_name, column, constraint)
-            if success:
-                QMessageBox.information(self, "Успех", f"Ограничение {constraint} снято со столбца '{column}'")
-            else:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось снять ограничение:\n{error}")
+        success, error = self.controller.drop_constraint(self.table_name, column, constraint)
+        if success:
+            QMessageBox.information(self, "Успех",
+                                    f"Ограничение {constraint} снято со столбца '{column}'")
+        else:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось снять ограничение:\n{error}")
 
 
 class DeleteColumnDialog(QDialog):
@@ -1820,7 +1841,7 @@ class EditRecordDialog(QDialog):
 
 
 class GroupFilterDialog(QDialog):
-    """Диалог группировки и фильтрации данных."""
+    """Диалог группировки и фильтрации данных (без сортировки; без LIKE в WHERE)."""
     def __init__(self, controller, table_name, columns_info, selected_column, cell_value="", is_join_mode=False, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -1831,29 +1852,27 @@ class GroupFilterDialog(QDialog):
         self.is_join_mode = is_join_mode
 
         self.where_clause = None
-        self.order_clause = None
+        self.order_clause = None  # Всегда None — сортировка убрана из окна
         self.group_clause = None
         self.having_clause = None
 
-        self.setWindowTitle(f"Группировка и фильтрация: {selected_column}")
+        self.setWindowTitle(f"Группировка и фильтрация по столбцу: {selected_column}")
         self.setMinimumWidth(500)
         self.setup_ui()
         self.center_on_screen()
 
     def center_on_screen(self):
-        """Центрирование диалога на экране."""
         screen = self.screen().geometry()
         self.move(screen.center() - self.rect().center())
 
     def setup_ui(self):
-        """Настройка UI."""
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel(f"<h3>Группировка и фильтрация по столбцу: {self.selected_column}</h3>"))
 
         form_layout = QFormLayout()
 
-        # Фильтрация
+        # Фильтрация (WHERE)
         filter_group = QGroupBox("Фильтрация (WHERE)")
         filter_layout = QVBoxLayout(filter_group)
 
@@ -1863,7 +1882,8 @@ class GroupFilterDialog(QDialog):
         where_layout.addWidget(self.where_column_edit)
 
         self.where_operator_combo = QComboBox()
-        self.where_operator_combo.addItems(["=", "!=", "<", "<=", ">", ">=", "LIKE", "IN", "IS NULL", "IS NOT NULL"])
+        # Убрали LIKE — он реализован в окне поиска
+        self.where_operator_combo.addItems(["=", "!=", "<", "<=", ">", ">=", "IN", "IS NULL", "IS NOT NULL"])
         where_layout.addWidget(self.where_operator_combo)
 
         self.where_value_edit = QLineEdit()
@@ -1873,26 +1893,29 @@ class GroupFilterDialog(QDialog):
         filter_layout.addLayout(where_layout)
 
         self.where_operator_combo.currentTextChanged.connect(self.update_where_ui)
-
         layout.addWidget(filter_group)
 
-        # Группировка
+        # Группировка (GROUP BY) — чёрный цвет заголовка и текста
         group_group = QGroupBox("Группировка (GROUP BY)")
+        group_group.setStyleSheet("QGroupBox{color:#000000;}")
         group_layout = QVBoxLayout(group_group)
 
         self.group_check = QCheckBox(f"Группировать по столбцу: {self.selected_column}")
+        self.group_check.setStyleSheet("color:#000000;")
         group_layout.addWidget(self.group_check)
 
         having_layout = QHBoxLayout()
         having_layout.addWidget(QLabel("HAVING:"))
         self.having_function_combo = QComboBox()
         self.having_function_combo.addItems(["COUNT", "SUM", "AVG", "MIN", "MAX"])
+        self.having_function_combo.setMinimumWidth(140)  # слегка увеличено
         having_layout.addWidget(self.having_function_combo)
 
         having_layout.addWidget(QLabel("(*)"))
 
         self.having_operator_combo = QComboBox()
         self.having_operator_combo.addItems(["=", "!=", "<", "<=", ">", ">="])
+        self.having_operator_combo.setMinimumWidth(120)  # слегка увеличено
         having_layout.addWidget(self.having_operator_combo)
 
         self.having_value_edit = QLineEdit()
@@ -1901,24 +1924,7 @@ class GroupFilterDialog(QDialog):
         group_layout.addLayout(having_layout)
         layout.addWidget(group_group)
 
-        # Сортировка
-        sort_group = QGroupBox("Сортировка (ORDER BY)")
-        sort_layout = QVBoxLayout(sort_group)
-
-        self.order_check = QCheckBox(f"Сортировать по столбцу: {self.selected_column}")
-        self.order_check.setChecked(True)
-        sort_layout.addWidget(self.order_check)
-
-        order_direction_layout = QHBoxLayout()
-        self.order_asc_radio = QRadioButton("По возрастанию (ASC)")
-        self.order_asc_radio.setChecked(True)
-        order_direction_layout.addWidget(self.order_asc_radio)
-
-        self.order_desc_radio = QRadioButton("По убыванию (DESC)")
-        order_direction_layout.addWidget(self.order_desc_radio)
-
-        sort_layout.addLayout(order_direction_layout)
-        layout.addWidget(sort_group)
+        # БЛОК СОРТИРОВКИ УДАЛЁН ИЗ ОКНА (сортировка доступна кликом по заголовку столбца)
 
         layout.addStretch()
 
@@ -1930,26 +1936,23 @@ class GroupFilterDialog(QDialog):
         self.update_where_ui(self.where_operator_combo.currentText())
 
     def update_where_ui(self, operator_text):
-        """Обновление UI фильтрации в зависимости от оператора."""
         if operator_text in ["IS NULL", "IS NOT NULL"]:
             self.where_value_edit.setVisible(False)
         else:
             self.where_value_edit.setVisible(True)
 
     def accept_dialog(self):
-        """Принятие настроек."""
         # WHERE
         if self.where_operator_combo.currentText() in ["IS NULL", "IS NOT NULL"]:
             self.where_clause = f"{self.where_column_edit.text()} {self.where_operator_combo.currentText()}"
         else:
             if self.where_value_edit.text().strip():
                 op = self.where_operator_combo.currentText()
-                if op == "LIKE":
-                    value = f"'%{self.where_value_edit.text()}%'"
-                elif op == "IN":
+                if op == "IN":
                     values = [f"'{v.strip()}'" for v in self.where_value_edit.text().split(",")]
                     value = f"({', '.join(values)})"
                 else:
+                    # Пытаемся распознать число, иначе — как строку
                     try:
                         float(self.where_value_edit.text())
                         value = self.where_value_edit.text()
@@ -1973,12 +1976,8 @@ class GroupFilterDialog(QDialog):
             self.group_clause = None
             self.having_clause = None
 
-        # ORDER BY
-        if self.order_check.isChecked():
-            direction = "DESC" if self.order_desc_radio.isChecked() else "ASC"
-            self.order_clause = f"{self.selected_column} {direction}"
-        else:
-            self.order_clause = None
+        # Сортировка отсутствует в этом окне
+        self.order_clause = None
 
         self.accept()
 
