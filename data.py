@@ -1282,27 +1282,50 @@ class DatabaseManager:
         Args:
             table_name: Имя таблицы
             column_name: Имя столбца
-            constraint_type: Тип ограничения (NOT NULL, UNIQUE, CHECK)
-            constraint_value: Значение для CHECK ограничения
+            constraint_type: Тип ограничения (NOT NULL, UNIQUE, CHECK, FOREIGN KEY)
+            constraint_value:
+                - для CHECK: строка с условием CHECK
+                - для FOREIGN KEY: кортеж (ref_table, ref_column)
 
         Returns:
-            tuple: (успех операции (bool), сообщение об ошибке (str))
+            tuple: (успех (bool), сообщение об ошибке (str))
         """
         try:
             if constraint_type == 'NOT NULL':
-                query = f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} ALTER COLUMN {sql.Identifier(column_name).as_string(self.cursor)} SET NOT NULL"
+                query = (
+                    f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} "
+                    f"ALTER COLUMN {sql.Identifier(column_name).as_string(self.cursor)} SET NOT NULL"
+                )
             elif constraint_type == 'UNIQUE':
-                query = f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} ADD UNIQUE ({sql.Identifier(column_name).as_string(self.cursor)})"
+                query = (
+                    f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} "
+                    f"ADD UNIQUE ({sql.Identifier(column_name).as_string(self.cursor)})"
+                )
             elif constraint_type == 'CHECK' and constraint_value:
                 constraint_name = f"{table_name}_{column_name}_check"
-                query = f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} ADD CONSTRAINT {sql.Identifier(constraint_name).as_string(self.cursor)} CHECK ({constraint_value})"
+                query = (
+                    f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} "
+                    f"ADD CONSTRAINT {sql.Identifier(constraint_name).as_string(self.cursor)} "
+                    f"CHECK ({constraint_value})"
+                )
+            elif constraint_type == 'FOREIGN KEY' and isinstance(constraint_value, tuple) and len(constraint_value) == 2:
+                ref_table, ref_column = constraint_value
+                constraint_name = f"{table_name}_{column_name}_fk"
+                query = (
+                    f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} "
+                    f"ADD CONSTRAINT {sql.Identifier(constraint_name).as_string(self.cursor)} "
+                    f"FOREIGN KEY ({sql.Identifier(column_name).as_string(self.cursor)}) "
+                    f"REFERENCES {sql.Identifier(ref_table).as_string(self.cursor)} "
+                    f"({sql.Identifier(ref_column).as_string(self.cursor)})"
+                )
             else:
-                return False, "Неизвестный тип ограничения"
+                return False, "Неизвестный тип ограничения или неверные параметры"
 
             self.cursor.execute(query)
             self.connection.commit()
             self.logger.info(
-                f"Установлено ограничение {constraint_type} на столбец {column_name} в таблице {table_name}")
+                f"Установлено ограничение {constraint_type} на столбец {column_name} в таблице {table_name}"
+            )
             return True, ""
         except psycopg2.Error as e:
             self.connection.rollback()
@@ -1317,28 +1340,58 @@ class DatabaseManager:
         Args:
             table_name: Имя таблицы
             column_name: Имя столбца
-            constraint_type: Тип ограничения (NOT NULL, UNIQUE, CHECK)
+            constraint_type: Тип ограничения (NOT NULL, UNIQUE, CHECK, FOREIGN KEY)
 
         Returns:
             tuple: (успех операции (bool), сообщение об ошибке (str))
         """
         try:
             if constraint_type == 'NOT NULL':
-                query = f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} ALTER COLUMN {sql.Identifier(column_name).as_string(self.cursor)} DROP NOT NULL"
+                query = (
+                    f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} "
+                    f"ALTER COLUMN {sql.Identifier(column_name).as_string(self.cursor)} DROP NOT NULL"
+                )
                 self.cursor.execute(query)
-            else:
+            elif constraint_type in ('UNIQUE', 'CHECK', 'FOREIGN KEY'):
+                # Ищем имя ограничения для конкретного столбца
+                # Для FOREIGN KEY используем key_column_usage, для UNIQUE/CHECK тоже можно связать по колонке
                 self.cursor.execute("""
-                    SELECT constraint_name 
-                    FROM information_schema.table_constraints 
-                    WHERE table_name = %s AND constraint_type = %s
-                """, (table_name, constraint_type))
-                result = self.cursor.fetchone()
-                if result:
-                    constraint_name = result[0]
-                    query = f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} DROP CONSTRAINT {sql.Identifier(constraint_name).as_string(self.cursor)}"
-                    self.cursor.execute(query)
-                else:
-                    return False, "Ограничение не найдено"
+                    SELECT tc.constraint_name, tc.constraint_type
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                     AND tc.table_schema = kcu.table_schema
+                     AND tc.table_name = kcu.table_name
+                    WHERE tc.table_schema = 'public'
+                      AND tc.table_name = %s
+                      AND kcu.column_name = %s
+                      AND tc.constraint_type = %s
+                    UNION ALL
+                    SELECT tc.constraint_name, tc.constraint_type
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.constraint_column_usage ccu
+                      ON tc.constraint_name = ccu.constraint_name
+                     AND tc.table_schema = ccu.table_schema
+                     AND tc.table_name = ccu.table_name
+                    WHERE tc.table_schema = 'public'
+                      AND tc.table_name = %s
+                      AND ccu.column_name = %s
+                      AND tc.constraint_type = %s
+                    LIMIT 1
+                """, (table_name, column_name, constraint_type,
+                      table_name, column_name, constraint_type))
+                row = self.cursor.fetchone()
+                if not row:
+                    return False, "Ограничение для указанного столбца не найдено"
+                constraint_name = row[0]
+
+                drop_q = (
+                    f"ALTER TABLE {sql.Identifier(table_name).as_string(self.cursor)} "
+                    f"DROP CONSTRAINT {sql.Identifier(constraint_name).as_string(self.cursor)}"
+                )
+                self.cursor.execute(drop_q)
+            else:
+                return False, "Неизвестный тип ограничения"
 
             self.connection.commit()
             self.logger.info(f"Снято ограничение {constraint_type} со столбца {column_name} в таблице {table_name}")
