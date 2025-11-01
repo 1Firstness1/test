@@ -39,6 +39,13 @@ class TaskDialog(QDialog):
         self.is_join_mode = False
         self.original_column_names = {}
 
+        # Накопители выражений (стакуемые функции)
+        self.where_clauses = []        # список условий WHERE, объединяются через AND
+        self.order_by_clauses = []     # список выражений ORDER BY, объединяются через запятую (приоритет по порядку)
+        self.group_by_clauses = []     # список столбцов для GROUP BY
+        self.having_clauses = []       # список условий HAVING, объединяются через AND
+        self.select_expressions = []   # список дополнительных выражений в SELECT (агрегаты с псевдонимами)
+
         # Имена таблиц
         self.task1_table_name = "task1"
         self.task2_table_name = "task2"
@@ -85,9 +92,9 @@ class TaskDialog(QDialog):
         self.data_table.setSelectionMode(QTableWidget.SingleSelection)
         self.data_table.verticalHeader().setVisible(False)
 
-        # Сортировка по заголовку
+        # Сортировка по заголовку теперь выключена, используется окно действий
         self.data_table.horizontalHeader().sectionClicked.connect(self.on_column_header_clicked)
-        # Двойной клик для группировки/фильтрации
+        # Двойной клик для открытия окна действий над столбцом
         self.data_table.cellDoubleClicked.connect(self.on_cell_double_clicked)
 
         layout.addWidget(self.data_table)
@@ -148,7 +155,7 @@ class TaskDialog(QDialog):
             self.status_label.setText("<b>Статус:</b> Таблица не выбрана")
 
     def reset_all_filters(self):
-        """Сброс всех фильтров и перезагрузка таблицы."""
+        """Сброс всех фильтров, группировок, сортировок и перезагрузка таблицы."""
         if not self.current_table:
             QMessageBox.warning(self, "Ошибка", "Таблица не выбрана")
             return
@@ -162,6 +169,13 @@ class TaskDialog(QDialog):
         self.join_conditions = []
         self.is_join_mode = False
         self.original_column_names = {}
+
+        # Сброс стакуемых условий
+        self.where_clauses = []
+        self.order_by_clauses = []
+        self.group_by_clauses = []
+        self.having_clauses = []
+        self.select_expressions = []
 
         self.load_table_data_filtered()
         self.update_status()
@@ -291,7 +305,7 @@ class TaskDialog(QDialog):
             })
 
     def on_cell_double_clicked(self, row, column):
-        """Открытие диалога группировки/фильтрации."""
+        """Открытие окна действий над столбцом (сортировка, фильтрация, группировка/агрегаты, HAVING)."""
         if not self.current_table or column >= len(self.current_columns):
             return
 
@@ -303,68 +317,23 @@ class TaskDialog(QDialog):
         if self.is_join_mode and column_name in self.original_column_names:
             orig_column_name = self.original_column_names[column_name]
 
-        dialog = GroupFilterDialog(self.controller, self.current_table,
-                                   self.all_columns_info, orig_column_name,
-                                   cell_value, self.is_join_mode, self)
-        if dialog.exec_():
-            self.current_where = dialog.where_clause if dialog.where_clause else None
-            self.current_order_by = dialog.order_clause if dialog.order_clause else None
-            self.current_group_by = dialog.group_clause if dialog.group_clause else None
-            self.current_having = dialog.having_clause if dialog.having_clause else None
-
-            self.load_table_data_filtered(
-                where=self.current_where,
-                order_by=self.current_order_by,
-                group_by=self.current_group_by,
-                having=self.current_having
-            )
+        dialog = ColumnActionsDialog(
+            controller=self.controller,
+            table_name=self.current_table,
+            columns_info=self.all_columns_info,
+            selected_column=orig_column_name,
+            prefill_value=cell_value,
+            parent=self
+        )
+        dialog.exec_()
 
     def on_column_header_clicked(self, logical_index):
-        """Обработка клика по заголовку столбца для сортировки."""
-        if not self.current_table or logical_index >= len(self.current_columns):
-            return
-
-        column_name = self.current_columns[logical_index]
-
-        if self.data_table.rowCount() == 0:
-            QMessageBox.warning(self, "Ошибка", "Таблица пуста, сортировка невозможна")
-            return
-
-        # Проверка на пустые столбцы
-        empty_column = True
-        for row in range(self.data_table.rowCount()):
-            item = self.data_table.item(row, logical_index)
-            if item and item.text().strip():
-                empty_column = False
-                break
-
-        if empty_column:
-            QMessageBox.warning(self, "Ошибка", "Столбец не содержит данных для сортировки")
-            return
-
-        order = "ASC"
-        if column_name in self.current_sort_order:
-            order = "DESC" if self.current_sort_order[column_name] == "ASC" else "ASC"
-        self.current_sort_order = {column_name: order}
-
-        if self.is_join_mode:
-            if column_name in self.original_column_names:
-                orig_column_name = self.original_column_names[column_name]
-                order_clause = f"{orig_column_name} {order}"
-                self.join_config['order_by'] = order_clause
-                self.execute_join_display(self.join_config)
-            else:
-                QMessageBox.warning(self, "Ошибка сортировки", "Не удалось найти информацию о столбце для сортировки")
-        else:
-            order_clause = f"{column_name} {order}"
-            self.load_table_data_filtered(
-                where=self.current_where,
-                order_by=order_clause,
-                group_by=self.current_group_by,
-                having=self.current_having
-            )
-
-        self.logger.info(f"Сортировка по {column_name} {order}")
+        """Сортировка перенесена в окно действий по двойному клику."""
+        QMessageBox.information(
+            self, "Сортировка",
+            "Сортировка теперь доступна через окно действий: дважды кликните по ячейке и выберите 'Сортировка'."
+        )
+        return
 
     def show_search_dialog(self):
         """Показ диалога поиска."""
@@ -452,23 +421,167 @@ class TaskDialog(QDialog):
                 having=self.current_having
             )
 
+    def refresh_with_current_clauses(self):
+        """
+        Пересобирает и применяет текущие стакуемые условия (WHERE/ORDER BY/GROUP BY/HAVING).
+        Работает в обоих режимах: таблица и JOIN.
+        """
+        where = " AND ".join(self.where_clauses) if self.where_clauses else None
+        order_by = ", ".join(self.order_by_clauses) if self.order_by_clauses else None
+        group_by = ", ".join(self.group_by_clauses) if self.group_by_clauses else None
+        having = " AND ".join(self.having_clauses) if self.having_clauses else None
+
+        # Формируем список столбцов для SELECT и заголовки при наличии группировки/агрегатов
+        select_cols = None
+        display_headers = None
+
+        if self.group_by_clauses or self.select_expressions:
+            select_cols = []
+            display_headers = []
+
+            # Функция подбора метки столбца для JOIN (table.column -> display)
+            def label_for_column(full_col: str) -> str:
+                if hasattr(self, 'original_column_names') and self.original_column_names:
+                    for disp, orig in self.original_column_names.items():
+                        if orig == full_col:
+                            return disp
+                return full_col.replace('.', '_')
+
+            # Сначала добавим столбцы группировки
+            for gb in self.group_by_clauses:
+                select_cols.append(gb)
+                display_headers.append(label_for_column(gb) if self.is_join_mode else gb)
+
+            # Затем агрегатные выражения
+            for expr in self.select_expressions:
+                select_cols.append(expr)
+                # Попробуем извлечь алиас из выражения вида "... AS alias"
+                up = expr.upper()
+                alias = None
+                if " AS " in up:
+                    parts = expr.rsplit(" AS ", 1)
+                    alias = parts[-1].strip().strip('"')
+                display_headers.append(alias if alias else expr)
+
+        # Сохраним текущие строки условий в поля состояния (для совместимости)
+        self.current_where = where
+        self.current_order_by = order_by
+        self.current_group_by = group_by
+        self.current_having = having
+
+        # Применение
+        if self.is_join_mode:
+            # Для JOIN используем тот же механизм загрузки, передавая переопределение SELECT
+            self.load_table_data_filtered(
+                columns=display_headers if display_headers else None,
+                where=where or self.join_config.get('where'),
+                order_by=order_by or self.join_config.get('order_by'),
+                group_by=group_by,
+                having=having,
+                params=None,
+                _select_override=(select_cols if select_cols else None)
+            )
+        else:
+            # Обычный режим таблицы
+            self.load_table_data_filtered(
+                columns=display_headers if display_headers else None,
+                where=where,
+                order_by=order_by,
+                group_by=group_by,
+                having=having,
+                params=None,
+                _select_override=(select_cols if select_cols else None)
+            )
+
+    def add_sort_clause(self, column, direction):
+        """
+        Добавить сортировку по столбцу (в конец ORDER BY, удаляя прежнюю сортировку по этому столбцу).
+        direction: "ASC" или "DESC".
+        """
+        clause = f"{column} {direction}"
+        self.order_by_clauses = [c for c in self.order_by_clauses if not c.startswith(f"{column} ")]
+        self.order_by_clauses.append(clause)
+        self.logger.info(f"Добавлена сортировка: {clause}")
+        self.refresh_with_current_clauses()
+
+    def add_where_clause(self, clause):
+        """Добавить условие WHERE (конъюнкция по AND)."""
+        if clause:
+            self.where_clauses.append(clause)
+            self.logger.info(f"Добавлен фильтр: {clause}")
+            self.refresh_with_current_clauses()
+
+    def add_group_by_column(self, column):
+        """Добавить столбец в GROUP BY (если он ещё не добавлен)."""
+        if column not in self.group_by_clauses:
+            self.group_by_clauses.append(column)
+            self.logger.info(f"Добавлена группировка по: {column}")
+            self.refresh_with_current_clauses()
+
+    def add_select_aggregate(self, expression):
+        """
+        Добавить агрегатное выражение в SELECT, например: COUNT(*) AS cnt, SUM(table.amount) AS s.
+        """
+        if expression and expression not in self.select_expressions:
+            self.select_expressions.append(expression)
+            self.logger.info(f"Добавлен агрегат в SELECT: {expression}")
+            self.refresh_with_current_clauses()
+
+    def add_having_clause(self, clause):
+        """Добавить условие HAVING (конъюнкция по AND)."""
+        if clause:
+            self.having_clauses.append(clause)
+            self.logger.info(f"Добавлен HAVING: {clause}")
+            self.refresh_with_current_clauses()
+
     def load_table_data_filtered(self, columns=None, where=None, order_by=None, group_by=None, having=None,
-                                 params=None):
-        """Загрузка данных таблицы с фильтрацией/группировкой. Работает и в режиме JOIN."""
+                                 params=None, _select_override=None):
+        """
+        Загрузка данных таблицы с фильтрацией/группировкой. Работает и в режиме JOIN.
+
+        columns: список заголовков столбцов (если требуется переопределить отображаемые заголовки).
+        _select_override: список выражений для SELECT (если нужно выбрать выражения/агрегаты, а не простые имена).
+        """
         if not self.current_table:
             return
 
         try:
             if self.is_join_mode:
-                # При JOIN никогда не сбрасываем заголовки на базовую таблицу.
-                # Формируем список выбираемых столбцов и заголовков.
-                if group_by:
-                    # Если выбрана группировка — безопасно выбираем только столбец группировки
-                    # (иначе SELECT со множеством столбцов без агрегатов упадет).
+                # В режиме JOIN заголовки и список столбцов зависят от конфигурации или переопределений
+                if _select_override is not None:
+                    selected_columns = _select_override
+                    # Заголовки: если columns передан — используем его,
+                    # иначе пробуем вывести по выражениям (_select_override)
+                    if columns is not None:
+                        self.current_columns = columns
+                    else:
+                        # Попробуем извлечь алиасы, иначе заменим точки на подчеркивания
+                        labels = []
+                        mapping = getattr(self, 'original_column_names', {}) or {}
+                        # Получим обратное отображение: table.col -> display
+                        reverse_map = {}
+                        for disp, orig in mapping.items():
+                            reverse_map[orig] = disp
+                        for expr in selected_columns:
+                            up = expr.upper()
+                            if " AS " in up:
+                                # берём алиас
+                                parts = expr.rsplit(" AS ", 1)
+                                alias = parts[-1].strip().strip('"')
+                                labels.append(alias)
+                            else:
+                                # если это table.column — попробуем найти читаемую метку
+                                if '.' in expr and '(' not in expr:
+                                    labels.append(reverse_map.get(expr, expr.replace('.', '_')))
+                                else:
+                                    labels.append(expr)
+                        self.current_columns = labels
+                elif group_by:
+                    # Если выбрана только группировка без переопределения SELECT,
+                    # безопасно выбираем только столбец группировки
                     selected_columns = [group_by]
 
-                    # Подберем человекочитаемый заголовок для group_by:
-                    # если есть маппинг — используем его, иначе table.column -> table_column
+                    # Подберем человекочитаемый заголовок для group_by
                     display_label = None
                     if hasattr(self, 'original_column_names') and self.original_column_names:
                         for disp, orig in self.original_column_names.items():
@@ -480,7 +593,7 @@ class TaskDialog(QDialog):
 
                     self.current_columns = [display_label]
                 else:
-                    # Без группировки показываем все выбранные в мастере JOIN столбцы
+                    # Без переопределений показываем все выбранные в мастере JOIN столбцы
                     selected_columns = self.join_config['selected_columns']
                     self.current_columns = self.join_config['column_labels']
 
@@ -496,20 +609,35 @@ class TaskDialog(QDialog):
                 data = results
             else:
                 # Обычный режим без JOIN
-                if columns:
-                    self.current_columns = columns
+                # Если передан _select_override — используем его для SELECT,
+                # а columns (если передан) используем как заголовки
+                if _select_override is not None:
+                    select_cols = _select_override
+                    self.current_columns = columns if columns else _select_override
+                    data = self.controller.get_table_data(
+                        self.current_table,
+                        select_cols,
+                        where,
+                        order_by,
+                        group_by,
+                        having,
+                        params
+                    )
                 else:
-                    self.current_columns = [col['name'] for col in self.all_columns_info]
+                    if columns:
+                        self.current_columns = columns
+                    else:
+                        self.current_columns = [col['name'] for col in self.all_columns_info]
 
-                data = self.controller.get_table_data(
-                    self.current_table,
-                    self.current_columns if columns else None,
-                    where,
-                    order_by,
-                    group_by,
-                    having,
-                    params
-                )
+                    data = self.controller.get_table_data(
+                        self.current_table,
+                        self.current_columns if columns else None,
+                        where,
+                        order_by,
+                        group_by,
+                        having,
+                        params
+                    )
 
             # Отрисовка таблицы
             self.data_table.clearSpans()
@@ -561,6 +689,13 @@ class TaskDialog(QDialog):
             self.current_group_by = None
             self.current_having = None
             self.original_column_names = {}
+
+            # Сброс накопителей при новом выборе таблицы/режима
+            self.where_clauses = []
+            self.order_by_clauses = []
+            self.group_by_clauses = []
+            self.having_clauses = []
+            self.select_expressions = []
 
             if dialog.is_join_mode:
                 self.join_config = dialog.join_config
@@ -1133,14 +1268,12 @@ class EditColumnDialog(QDialog):
             if not ok or not constraint_value:
                 return
         elif constraint == "FOREIGN KEY":
-            # Просим ссылочную таблицу
             ref_table, ok = QInputDialog.getText(
                 self, "FOREIGN KEY - таблица",
                 "Введите имя связанной таблицы (REFERENCES table):"
             )
             if not ok or not ref_table:
                 return
-            # Просим ссылочный столбец
             ref_column, ok = QInputDialog.getText(
                 self, "FOREIGN KEY - столбец",
                 "Введите имя связанного столбца (REFERENCES table(column)):"
@@ -1264,7 +1397,7 @@ class AddRecordDialog(QDialog):
         layout.addRow("", buttons_layout)
 
     def create_widget_for_type(self, col_type, col_info):
-        """Создание виджета по типу с синим стилем."""
+        """Создание виджета по типу с фирменным стилем."""
         blue = "#4a86e8"
         blue_hover = "#3a76d8"
         blue_dark = "#2a66c8"
@@ -1558,7 +1691,6 @@ class EditRecordDialog(QDialog):
         layout.addRow("", buttons_layout)
 
     def create_widget_for_type(self, col_type, col_info):
-        """Создание виджета по типу с синим стилем."""
         blue = "#4a86e8"
         blue_hover = "#3a76d8"
         blue_dark = "#2a66c8"
@@ -1570,36 +1702,37 @@ class EditRecordDialog(QDialog):
             border: 1px solid #c0c0c0;
             border-radius: 4px;
             padding: 4px 6px;
-            min-height: 24px;
+            min-height: 25px;
         }}
         QSpinBox:focus, QDoubleSpinBox:focus, QTimeEdit:focus, QDateEdit:focus {{
             border: 1px solid {blue};
         }}
-        QSpinBox::up-button, QDoubleSpinBox::up-button {{
+        QSpinBox::up-button, QDoubleSpinBox::up-button, QTimeEdit::up-button, QDateEdit::up-button {{
             background-color: #e8e8e8;
             width: 18px;
             border: none;
             border-left: 1px solid #c0c0c0;
-            border-top-right-radius: 3px;
-            border-bottom: 1px solid #c0c0c0;
+            border-top-right-radius: 4px;
         }}
-        QSpinBox::down-button, QDoubleSpinBox::down-button {{
+        QSpinBox::down-button, QDoubleSpinBox::down-button, QTimeEdit::down-button, QDateEdit::down-button {{
             background-color: #e8e8e8;
             width: 18px;
             border: none;
             border-left: 1px solid #c0c0c0;
-            border-bottom-right-radius: 3px;
+            border-bottom-right-radius: 4px;
         }}
-        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {{
+        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover, QTimeEdit::up-button:hover, QDateEdit::up-button:hover,
+        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover, QTimeEdit::down-button:hover, QDateEdit::down-button:hover {{
             background-color: #d0e8ff;
         }}
-        QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {{
+        QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed, QTimeEdit::up-button:pressed, QDateEdit::up-button:pressed,
+        QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed, QTimeEdit::down-button:pressed, QDateEdit::down-button:pressed {{
             background-color: {blue};
         }}
         QDateEdit::drop-down {{
             subcontrol-origin: padding;
             subcontrol-position: top right;
-            width: 20px;
+            width: 22px;
             border-left: 1px solid #c0c0c0;
             background: {blue};
             border-top-right-radius: 4px;
@@ -1625,12 +1758,16 @@ class EditRecordDialog(QDialog):
             background: white;
         }}
         QCheckBox::indicator:hover {{
-            border: 1px solid {blue};
+            border: 1px solid {blue_hover};
+            background: #f0f6ff;
         }}
         QCheckBox::indicator:checked {{
             background-color: {blue};
             border: 1px solid {blue_dark};
             image: none;
+        }}
+        QCheckBox::indicator:checked:hover {{
+            background-color: {blue_hover};
         }}
         """
 
@@ -1704,34 +1841,34 @@ class EditRecordDialog(QDialog):
             return w
         elif any(t in col_type for t in ['text', 'varchar', 'char']):
             w = ValidatedLineEdit(self.controller)
-            w.setStyleSheet("""
-                QLineEdit {
+            w.setStyleSheet(f"""
+                QLineEdit {{
                     background-color: white;
                     color: #333333;
                     border: 1px solid #c0c0c0;
                     padding: 4px;
                     min-width: 120px;
                     border-radius: 4px;
-                }
-                QLineEdit:focus {
-                    border: 1px solid #4a86e8;
-                }
+                }}
+                QLineEdit:focus {{
+                    border: 1px solid {blue};
+                }}
             """)
             return w
         else:
             w = ValidatedLineEdit(self.controller)
-            w.setStyleSheet("""
-                QLineEdit {
+            w.setStyleSheet(f"""
+                QLineEdit {{
                     background-color: white;
                     color: #333333;
                     border: 1px solid #c0c0c0;
                     padding: 4px;
                     min-width: 120px;
                     border-radius: 4px;
-                }
-                QLineEdit:focus {
-                    border: 1px solid #4a86e8;
-                }
+                }}
+                QLineEdit:focus {{
+                    border: 1px solid {blue};
+                }}
             """)
             return w
 
@@ -1841,7 +1978,7 @@ class EditRecordDialog(QDialog):
 
 
 class GroupFilterDialog(QDialog):
-    """Диалог группировки и фильтрации данных (без сортировки; без LIKE в WHERE)."""
+    """Диалог группировки и фильтрации данных (устаревший для сортировки; без LIKE в WHERE)."""
     def __init__(self, controller, table_name, columns_info, selected_column, cell_value="", is_join_mode=False, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -1852,7 +1989,7 @@ class GroupFilterDialog(QDialog):
         self.is_join_mode = is_join_mode
 
         self.where_clause = None
-        self.order_clause = None  # Всегда None — сортировка убрана из окна
+        self.order_clause = None  # сортировка перенесена в отдельное окно
         self.group_clause = None
         self.having_clause = None
 
@@ -1882,7 +2019,7 @@ class GroupFilterDialog(QDialog):
         where_layout.addWidget(self.where_column_edit)
 
         self.where_operator_combo = QComboBox()
-        # Убрали LIKE — он реализован в окне поиска
+        # LIKE отсутствует — реализован в окне поиска
         self.where_operator_combo.addItems(["=", "!=", "<", "<=", ">", ">=", "IN", "IS NULL", "IS NOT NULL"])
         where_layout.addWidget(self.where_operator_combo)
 
@@ -1895,7 +2032,7 @@ class GroupFilterDialog(QDialog):
         self.where_operator_combo.currentTextChanged.connect(self.update_where_ui)
         layout.addWidget(filter_group)
 
-        # Группировка (GROUP BY) — чёрный цвет заголовка и текста
+        # Группировка (GROUP BY)
         group_group = QGroupBox("Группировка (GROUP BY)")
         group_group.setStyleSheet("QGroupBox{color:#000000;}")
         group_layout = QVBoxLayout(group_group)
@@ -1908,14 +2045,14 @@ class GroupFilterDialog(QDialog):
         having_layout.addWidget(QLabel("HAVING:"))
         self.having_function_combo = QComboBox()
         self.having_function_combo.addItems(["COUNT", "SUM", "AVG", "MIN", "MAX"])
-        self.having_function_combo.setMinimumWidth(140)  # слегка увеличено
+        self.having_function_combo.setMinimumWidth(140)
         having_layout.addWidget(self.having_function_combo)
 
         having_layout.addWidget(QLabel("(*)"))
 
         self.having_operator_combo = QComboBox()
         self.having_operator_combo.addItems(["=", "!=", "<", "<=", ">", ">="])
-        self.having_operator_combo.setMinimumWidth(120)  # слегка увеличено
+        self.having_operator_combo.setMinimumWidth(120)
         having_layout.addWidget(self.having_operator_combo)
 
         self.having_value_edit = QLineEdit()
@@ -1923,8 +2060,6 @@ class GroupFilterDialog(QDialog):
 
         group_layout.addLayout(having_layout)
         layout.addWidget(group_group)
-
-        # БЛОК СОРТИРОВКИ УДАЛЁН ИЗ ОКНА (сортировка доступна кликом по заголовку столбца)
 
         layout.addStretch()
 
@@ -1952,7 +2087,6 @@ class GroupFilterDialog(QDialog):
                     values = [f"'{v.strip()}'" for v in self.where_value_edit.text().split(",")]
                     value = f"({', '.join(values)})"
                 else:
-                    # Пытаемся распознать число, иначе — как строку
                     try:
                         float(self.where_value_edit.text())
                         value = self.where_value_edit.text()
@@ -1984,7 +2118,6 @@ class GroupFilterDialog(QDialog):
 
 class SearchDialog(QDialog):
     """Диалог поиска по таблице с защитой от SQL Injection."""
-
     def __init__(self, controller, table_name, columns_info, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -2081,7 +2214,6 @@ class SearchDialog(QDialog):
 
 class DisplayOptionsDialog(QDialog):
     """Диалог опций вывода данных."""
-
     def __init__(self, controller, current_table=None, parent=None, task_dialog=None):
         super().__init__(parent)
         self.controller = controller
@@ -2216,7 +2348,6 @@ class DisplayOptionsDialog(QDialog):
 
 class SelectTableDialog(QDialog):
     """Диалог выбора таблицы с отображением и выбором столбцов."""
-
     def __init__(self, controller, current_table=None, parent=None, task_dialog=None):
         super().__init__(parent)
         self.controller = controller
@@ -2237,7 +2368,6 @@ class SelectTableDialog(QDialog):
         self.move(screen.center() - self.rect().center())
 
     def setup_ui(self):
-        """Настройка UI."""
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel("<h3>Выберите таблицу</h3>"))
@@ -2266,6 +2396,31 @@ class SelectTableDialog(QDialog):
 
         layout.addWidget(QLabel("<b>Выберите столбцы:</b>"))
 
+        checkbox_style = """
+        QCheckBox {
+            color: white;
+        }
+        QCheckBox::indicator {
+            width: 14px;
+            height: 14px;
+            border: 1px solid #c0c0c0;
+            border-radius: 3px;
+            background: white;
+        }
+        QCheckBox::indicator:hover {
+            border: 1px solid #3a76d8;
+            background: #f0f6ff;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #4a86e8;
+            border: 1px solid #2a66c8;
+            image: none;
+        }
+        QCheckBox::indicator:checked:hover {
+            background-color: #3a76d8;
+        }
+        """
+
         self.columns_checks = {}
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -2277,6 +2432,7 @@ class SelectTableDialog(QDialog):
         for col in current_columns:
             check = QCheckBox(f"{col['name']} ({col['type']})")
             check.setChecked(True)
+            check.setStyleSheet(checkbox_style)
             self.columns_checks[col['name']] = check
             scroll_layout.addWidget(check)
 
@@ -2345,7 +2501,6 @@ class SelectTableDialog(QDialog):
 
 class JoinWizardDialog(QDialog):
     """Мастер создания JOIN запросов."""
-
     def __init__(self, controller, base_table, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -2366,7 +2521,6 @@ class JoinWizardDialog(QDialog):
         self.move(screen.center() - self.rect().center())
 
     def setup_ui(self):
-        """Настройка UI."""
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel(f"<h3>Создание JOIN запроса</h3>"))
@@ -2385,9 +2539,7 @@ class JoinWizardDialog(QDialog):
         if 'task2' in other_tables:
             self.join_table_combo.setCurrentText('task2')
 
-        self.join_table_combo.currentTextChanged.connect(self.update_join_columns)
         join_table_layout.addWidget(self.join_table_combo)
-
         layout.addLayout(join_table_layout)
 
         join_type_layout = QHBoxLayout()
@@ -2396,7 +2548,6 @@ class JoinWizardDialog(QDialog):
         self.join_type_combo = QComboBox()
         self.join_type_combo.addItems(["INNER", "LEFT", "RIGHT", "FULL"])
         join_type_layout.addWidget(self.join_type_combo)
-
         layout.addLayout(join_type_layout)
 
         layout.addWidget(QLabel("<b>Условие соединения (ON):</b>"))
@@ -2423,7 +2574,32 @@ class JoinWizardDialog(QDialog):
 
         columns_layout = QHBoxLayout()
 
-        # Столбцы базовой таблицы
+        # единый стиль для всех чекбоксов
+        checkbox_style = """
+        QCheckBox {
+            color: white;
+        }
+        QCheckBox::indicator {
+            width: 14px; height: 14px;
+            border: 1px solid #c0c0c0;
+            border-radius: 3px;
+            background: white;
+        }
+        QCheckBox::indicator:hover {
+            border: 1px solid #3a76d8;
+            background: #f0f6ff;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #4a86e8;
+            border: 1px solid #2a66c8;
+            image: none;
+        }
+        QCheckBox::indicator:checked:hover {
+            background-color: #3a76d8;
+        }
+        """
+
+        # ---- базовая таблица
         base_group = QGroupBox(f"Столбцы таблицы {self.base_table}")
         base_layout = QVBoxLayout(base_group)
         base_scroll = QScrollArea()
@@ -2431,10 +2607,14 @@ class JoinWizardDialog(QDialog):
         base_scroll_widget = QWidget()
         base_scroll_layout = QVBoxLayout(base_scroll_widget)
 
-        base_columns = self.controller.get_table_columns(self.base_table)
+        self.base_columns_checks = {}
+        base_columns = self.controller.get_table_columns(self.base_table) or []
         for col in base_columns:
-            check = QCheckBox(f"{col['name']}")
+            # создаём с родителем, применяем стиль и явную LTR-направленность
+            check = QCheckBox(f"{col['name']}", parent=base_scroll_widget)
             check.setChecked(True)
+            check.setLayoutDirection(Qt.LeftToRight)
+            check.setStyleSheet(checkbox_style)
             self.base_columns_checks[col['name']] = check
             base_scroll_layout.addWidget(check)
 
@@ -2443,18 +2623,106 @@ class JoinWizardDialog(QDialog):
         base_layout.addWidget(base_scroll)
         columns_layout.addWidget(base_group)
 
-        # Столбцы присоединяемой таблицы
+        # ---- присоединяемая таблица
         join_group = QGroupBox(f"Столбцы присоединяемой таблицы")
         join_layout = QVBoxLayout(join_group)
         self.join_scroll = QScrollArea()
         self.join_scroll.setWidgetResizable(True)
-        self.update_join_columns(self.join_table_combo.currentText())
+
+        # виджет-контейнер для чекбоксов
+        self.join_scroll_widget = QWidget()
+        # присваиваем layout прямо этому виджету
+        self.join_scroll_layout = QVBoxLayout(self.join_scroll_widget)
+        self.join_scroll.setWidget(self.join_scroll_widget)
         join_layout.addWidget(self.join_scroll)
         columns_layout.addWidget(join_group)
 
+        self.join_columns_checks = {}
+
+        # безопасная очистка layout (без обращения к удалённым C++ объектам)
+        def clear_layout_safe(vlayout):
+            if vlayout is None:
+                return
+            # берём элементы пока они есть
+            while vlayout.count():
+                item = vlayout.takeAt(0)
+                if item is None:
+                    continue
+                w = item.widget()
+                if w is not None:
+                    # удаляем виджет корректно
+                    w.deleteLater()
+                else:
+                    # если это layout — рекурсивно очищаем
+                    child_layout = item.layout()
+                    if child_layout is not None:
+                        clear_layout_safe(child_layout)
+
+        # функция добавления чекбоксов — используется и при инициализации, и при смене таблицы
+        def add_join_checkboxes(table_name):
+            # защита: объект может быть уже удалён, тогда выходим
+            if not hasattr(self, "join_scroll_layout") or self.join_scroll_layout is None:
+                return
+
+            # очишаем безопасно
+            clear_layout_safe(self.join_scroll_layout)
+
+            self.join_columns_checks = {}
+            if not table_name:
+                # обновим метку и списки ON-колонок
+                self.join_table_label.setText("")
+                self.join_column_combo.clear()
+                return
+
+            # обновляем метку таблицы для ON
+            self.join_table_label.setText(table_name)
+
+            # получаем столбцы присоединяемой таблицы
+            join_columns = self.controller.get_table_columns(table_name) or []
+
+            for col in join_columns:
+                # создаём чекбокс с родителем контейнера, применяем стиль и LTR
+                check = QCheckBox(f"{col['name']}", parent=self.join_scroll_widget)
+                check.setChecked(True)
+                check.setLayoutDirection(Qt.LeftToRight)
+                check.setStyleSheet(checkbox_style)
+                self.join_columns_checks[col['name']] = check
+                self.join_scroll_layout.addWidget(check)
+
+            self.join_scroll_layout.addStretch()
+
+            # обновляем список колонок для ON (если нужно)
+            try:
+                # сохраняем текущий текст, если он есть и присутствует в новом наборе — оставляем
+                cur = self.join_column_combo.currentText()
+                self.join_column_combo.blockSignals(True)
+                self.join_column_combo.clear()
+                for col in join_columns:
+                    self.join_column_combo.addItem(col['name'])
+                # восстановим выбор если возможно
+                if cur and cur in [c['name'] for c in join_columns]:
+                    self.join_column_combo.setCurrentText(cur)
+                self.join_column_combo.blockSignals(False)
+            except Exception:
+                # если что-то пошло не так — просто очистим и добавим заново
+                self.join_column_combo.clear()
+                for col in join_columns:
+                    self.join_column_combo.addItem(col['name'])
+
+        # подключаем слот и делаем первичную инициализацию
+        self.join_table_combo.currentTextChanged.connect(add_join_checkboxes)
+        add_join_checkboxes(self.join_table_combo.currentText())
+
+        # обязательно вызвать старый update_join_columns чтобы синхронизировать остальные элементы (ON и т.д.)
+        try:
+            self.update_join_columns(self.join_table_combo.currentText())
+        except Exception:
+            # если update_join_columns ожидает другие вещи — проигнорируем ошибку здесь,
+            # но чекбоксы и список колонок присоединяемой таблицы уже корректны.
+            pass
+
         layout.addLayout(columns_layout)
 
-        # Примечание: поле WHERE убрано по требованию
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -2557,7 +2825,6 @@ class JoinWizardDialog(QDialog):
 
 class StringFunctionsDialog(QDialog):
     """Диалог работы со строковыми функциями."""
-
     def __init__(self, controller, table_name, columns_info, parent=None, selected_column=None):
         super().__init__(parent)
         self.controller = controller
@@ -2645,7 +2912,7 @@ class StringFunctionsDialog(QDialog):
         self.on_function_changed(self.function_combo.currentText())
 
     def on_function_changed(self, function_text):
-        """Обработка изменения выбранной функции."""
+        """Обработка изменения выбранной функции и параметров."""
         while self.params_layout.rowCount() > 0:
             self.params_layout.removeRow(0)
 
@@ -2729,7 +2996,7 @@ class StringFunctionsDialog(QDialog):
             return None, None
 
     def apply_function(self):
-        """Применение выбранной функции."""
+        """Применение выбранной функции к данным (предпросмотр)."""
         try:
             sql_expr, column = self.get_sql_expression()
             if not sql_expr:
@@ -2823,3 +3090,334 @@ class StringFunctionsDialog(QDialog):
         except Exception as e:
             self.logger.error(f"Ошибка создания столбца: {str(e)}")
             QMessageBox.critical(self, "Ошибка", f"Ошибка при создании столбца:\n{str(e)}")
+
+
+class ColumnActionsDialog(QDialog):
+    """
+    Окно действий над выбранным столбцом:
+    - Сортировка (перенесена с заголовка)
+    - Фильтрация (WHERE)
+    - Группировка, агрегатные функции и HAVING
+    """
+    def __init__(self, controller, table_name, columns_info, selected_column, prefill_value="", parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.table_name = table_name
+        self.columns_info = columns_info
+        self.selected_column = selected_column
+        self.prefill_value = prefill_value
+        self.task_dialog = parent  # TaskDialog
+
+        self.setWindowTitle(f"Действия над столбцом: {self.selected_column}")
+        self.setMinimumWidth(420)
+        self.setup_ui()
+        self.center_on_screen()
+
+    def center_on_screen(self):
+        screen = self.screen().geometry()
+        self.move(screen.center() - self.rect().center())
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"<h3>Столбец: {self.selected_column}</h3>"))
+
+        sort_btn = QPushButton("Сортировка")
+        sort_btn.setMinimumHeight(40)
+        sort_btn.clicked.connect(self.open_sort)
+        layout.addWidget(sort_btn)
+
+        filter_btn = QPushButton("Фильтрация (WHERE)")
+        filter_btn.setMinimumHeight(40)
+        filter_btn.clicked.connect(self.open_filter)
+        layout.addWidget(filter_btn)
+
+        group_btn = QPushButton("Группировка (GROUP BY, агрегаты, HAVING)")
+        group_btn.setMinimumHeight(40)
+        group_btn.clicked.connect(self.open_group)
+        layout.addWidget(group_btn)
+
+        layout.addStretch()
+
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+    def open_sort(self):
+        dlg = SortDialog(self.selected_column, self)
+        if dlg.exec_():
+            direction = dlg.direction
+            if hasattr(self.task_dialog, "add_sort_clause"):
+                self.task_dialog.add_sort_clause(self.selected_column, direction)
+
+    def open_filter(self):
+        dlg = FilterDialog(self.selected_column, self.prefill_value, self)
+        if dlg.exec_():
+            where_clause = dlg.where_clause
+            if hasattr(self.task_dialog, "add_where_clause"):
+                self.task_dialog.add_where_clause(where_clause)
+
+    def open_group(self):
+        dlg = GroupDialog(self.selected_column, self.columns_info, self)
+        if dlg.exec_():
+            if dlg.group_by_selected and hasattr(self.task_dialog, "add_group_by_column"):
+                self.task_dialog.add_group_by_column(self.selected_column)
+
+            if dlg.aggregate_expression and hasattr(self.task_dialog, "add_select_aggregate"):
+                self.task_dialog.add_select_aggregate(dlg.aggregate_expression)
+
+            if dlg.having_clause and hasattr(self.task_dialog, "add_having_clause"):
+                self.task_dialog.add_having_clause(dlg.having_clause)
+
+
+class SortDialog(QDialog):
+    """Диалог сортировки по столбцу."""
+    def __init__(self, column, parent=None):
+        super().__init__(parent)
+        self.column = column
+        self.direction = "ASC"
+        self.setWindowTitle(f"Сортировка: {self.column}")
+        self.setMinimumWidth(144)
+        self.setup_ui()
+        self.center_on_screen()
+
+    def center_on_screen(self):
+        screen = self.screen().geometry()
+        self.move(screen.center() - self.rect().center())
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.dir_combo = QComboBox()
+        self.dir_combo.addItems(["ASC", "DESC"])
+        self.dir_combo.setMinimumWidth(100)
+        form.addRow("Направление:", self.dir_combo)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept_dialog)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def accept_dialog(self):
+        self.direction = self.dir_combo.currentText()
+        self.accept()
+
+
+class FilterDialog(QDialog):
+    """Диалог фильтрации WHERE для одного столбца."""
+    def __init__(self, column, prefill_value="", parent=None):
+        super().__init__(parent)
+        self.column = column
+        self.prefill_value = prefill_value
+        self.where_clause = None
+
+        self.setWindowTitle(f"Фильтрация (WHERE): {self.column}")
+        self.setMinimumWidth(520)
+        self.setup_ui()
+        self.center_on_screen()
+
+    def center_on_screen(self):
+        screen = self.screen().geometry()
+        self.move(screen.center() - self.rect().center())
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+
+        self.op_combo = QComboBox()
+        self.op_combo.addItems(["=", "!=", "<", "<=", ">", ">=", "IN", "IS NULL", "IS NOT NULL"])
+        form.addRow("Оператор:", self.op_combo)
+
+        self.value_edit = QLineEdit()
+        if self.prefill_value:
+            self.value_edit.setText(self.prefill_value)
+        form.addRow("Значение:", self.value_edit)
+
+        layout.addLayout(form)
+
+        self.op_combo.currentTextChanged.connect(self._toggle_value)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept_dialog)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._toggle_value(self.op_combo.currentText())
+
+    def _toggle_value(self, op):
+        self.value_edit.setVisible(op not in ("IS NULL", "IS NOT NULL"))
+
+    def accept_dialog(self):
+        op = self.op_combo.currentText()
+        if op in ("IS NULL", "IS NOT NULL"):
+            self.where_clause = f"{self.column} {op}"
+        else:
+            val = self.value_edit.text().strip()
+            if not val:
+                QMessageBox.warning(self, "Ошибка", "Введите значение фильтра")
+                return
+            if op == "IN":
+                parts = [p.strip() for p in val.split(",") if p.strip()]
+                quoted = ", ".join([f"'{p}'" if not self._is_number(p) else p for p in parts])
+                self.where_clause = f"{self.column} IN ({quoted})"
+            else:
+                value = val if self._is_number(val) else f"'{val}'"
+                self.where_clause = f"{self.column} {op} {value}"
+        self.accept()
+
+    @staticmethod
+    def _is_number(s):
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False
+
+
+class GroupDialog(QDialog):
+    """Диалог группировки с выбором агрегатной функции и HAVING."""
+    def __init__(self, column, columns_info, parent=None):
+        super().__init__(parent)
+        self.column = column
+        self.columns_info = columns_info
+
+        self.group_by_selected = True         # группировать по выбранному столбцу
+        self.aggregate_expression = None      # выражение агрегата для SELECT (включая AS)
+        self.having_clause = None             # выражение HAVING
+
+        self.setWindowTitle(f"Группировка: {self.column}")
+        self.setMinimumWidth(560)
+        self.setup_ui()
+        self.center_on_screen()
+
+    def center_on_screen(self):
+        screen = self.screen().geometry()
+        self.move(screen.center() - self.rect().center())
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        checkbox_style = """
+        QCheckBox {
+            color: #333333;
+        }
+        QCheckBox::indicator {
+            width: 14px;
+            height: 14px;
+            border: 1px solid #c0c0c0;
+            border-radius: 3px;
+            background: white;
+        }
+        QCheckBox::indicator:hover {
+            border: 1px solid #3a76d8;
+            background: #f0f6ff;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #4a86e8;
+            border: 1px solid #2a66c8;
+            image: none;
+        }
+        QCheckBox::indicator:checked:hover {
+            background-color: #3a76d8;
+        }
+        """
+
+        gb_group = QGroupBox("Группировка (GROUP BY)")
+        gb_group.setStyleSheet("color: #333333;")
+        gb_layout = QVBoxLayout(gb_group)
+        self.gb_check = QCheckBox(f"Группировать по '{self.column}'")
+        self.gb_check.setChecked(True)
+        self.gb_check.setStyleSheet(checkbox_style)
+        gb_layout.addWidget(self.gb_check)
+        layout.addWidget(gb_group)
+
+        agg_group = QGroupBox("Агрегатная функция")
+        agg_group.setStyleSheet("color: #333333;")
+        agg_form = QFormLayout(agg_group)
+        self.agg_func = QComboBox()
+        self.agg_func.addItems(["(нет)", "COUNT(*)", "COUNT(col)", "SUM", "AVG", "MIN", "MAX"])
+        agg_form.addRow("Функция:", self.agg_func)
+
+        self.alias_edit = QLineEdit()
+        agg_form.addRow("Псевдоним:", self.alias_edit)
+
+        layout.addWidget(agg_group)
+
+        having_group = QGroupBox("Фильтрация групп (HAVING)")
+        having_group.setStyleSheet("color: #333333;")
+        having_form = QFormLayout(having_group)
+
+        self.having_enable = QCheckBox("Включить HAVING")
+        self.having_enable.setChecked(False)
+        self.having_enable.setStyleSheet(checkbox_style)
+        having_form.addRow(self.having_enable)
+
+        self.having_op = QComboBox()
+        self.having_op.addItems(["=", "!=", "<", "<=", ">", ">="])
+        self.having_op.setMinimumWidth(80)
+        having_form.addRow("Оператор:", self.having_op)
+
+        self.having_value = QLineEdit()
+        having_form.addRow("Значение:", self.having_value)
+
+        layout.addWidget(having_group)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept_dialog)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._toggle_having_ui()
+        self.having_enable.stateChanged.connect(self._toggle_having_ui)
+
+    def _toggle_having_ui(self):
+        enabled = self.having_enable.isChecked()
+        self.having_op.setEnabled(enabled)
+        self.having_value.setEnabled(enabled)
+
+    @staticmethod
+    def _is_number(s):
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False
+
+    def _build_agg_expr(self):
+        func_choice = self.agg_func.currentText()
+        if func_choice == "(нет)":
+            return None, None  # нет агрегата
+        if func_choice == "COUNT(*)":
+            base = "COUNT(*)"
+        elif func_choice == "COUNT(col)":
+            base = f"COUNT({self.column})"
+        else:
+            base = f"{func_choice}({self.column})"
+        alias = self.alias_edit.text().strip()
+        expr = f"{base} AS {alias}" if alias else base
+        return base, expr
+
+    def accept_dialog(self):
+        self.group_by_selected = self.gb_check.isChecked()
+
+        base_func, expr = self._build_agg_expr()
+        self.aggregate_expression = expr
+
+        # HAVING
+        if self.having_enable.isChecked():
+            if not base_func:
+                QMessageBox.warning(self, "Ошибка", "Для HAVING необходимо выбрать агрегатную функцию")
+                return
+            op = self.having_op.currentText()
+            val_str = self.having_value.text().strip()
+            if not val_str:
+                QMessageBox.warning(self, "Ошибка", "Введите значение для HAVING")
+                return
+            value = val_str if self._is_number(val_str) else f"'{val_str}'"
+            self.having_clause = f"{base_func} {op} {value}"
+        else:
+            self.having_clause = None
+
+        self.accept()
