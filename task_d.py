@@ -1568,12 +1568,16 @@ class AddRecordDialog(QDialog):
             background: white;
         }}
         QCheckBox::indicator:hover {{
-            border: 1px solid {blue};
+            border: 1px solid {blue_hover};
+            background: #f0f6ff;
         }}
         QCheckBox::indicator:checked {{
             background-color: {blue};
             border: 1px solid {blue_dark};
             image: none;
+        }}
+        QCheckBox::indicator:checked:hover {{
+            background-color: {blue_hover};
         }}
         """
 
@@ -1627,49 +1631,54 @@ class AddRecordDialog(QDialog):
             return w
         elif 'date' in col_type:
             w = QDateEdit()
-            w.setDate(QDate.currentDate())
             w.setCalendarPopup(True)
             w.setStyleSheet(spin_style)
             cal = w.calendarWidget()
             if cal:
                 cal.setStyleSheet(calendar_style)
             return w
-        elif 'timestamp' in col_type or 'time' in col_type:
+        elif 'timestamp' in col_type:
+            w = QDateEdit()
+            w.setCalendarPopup(True)
+            w.setStyleSheet(spin_style)
+            cal = w.calendarWidget()
+            if cal:
+                cal.setStyleSheet(calendar_style)
+            return w
+        elif 'time' in col_type:
             w = QTimeEdit()
-            w.setTime(QTime.currentTime())
             w.setStyleSheet(spin_style)
             return w
         elif any(t in col_type for t in ['text', 'varchar', 'char']):
             w = ValidatedLineEdit(self.controller)
-            w.setStyleSheet("""
-                QLineEdit {
+            w.setStyleSheet(f"""
+                QLineEdit {{
                     background-color: white;
                     color: #333333;
                     border: 1px solid #c0c0c0;
                     padding: 4px;
                     min-width: 120px;
                     border-radius: 4px;
-                }
-                QLineEdit:focus {
-                    border: 1px solid #4a86e8;
-                }
+                }}
+                QLineEdit:focus {{
+                    border: 1px solid {blue};
+                }}
             """)
             return w
         else:
-            # для пользовательских типов (enum, composite) вводим как текст
             w = ValidatedLineEdit(self.controller)
-            w.setStyleSheet("""
-                QLineEdit {
+            w.setStyleSheet(f"""
+                QLineEdit {{
                     background-color: white;
                     color: #333333;
                     border: 1px solid #c0c0c0;
                     padding: 4px;
                     min-width: 120px;
                     border-radius: 4px;
-                }
-                QLineEdit:focus {
-                    border: 1px solid #4a86e8;
-                }
+                }}
+                QLineEdit:focus {{
+                    border: 1px solid {blue};
+                }}
             """)
             return w
 
@@ -2178,76 +2187,236 @@ class GroupFilterDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        self.update_where_ui(self.where_operator_combo.currentText())
+        self._toggle_agg_target()
+        self.agg_func.currentTextChanged.connect(self._toggle_agg_target)
+        self._toggle_having_ui()
+        self.having_enable.stateChanged.connect(self._toggle_having_ui)
 
-    def update_where_ui(self, operator_text):
-        if operator_text in ["IS NULL", "IS NOT NULL"]:
-            self.where_value_edit.setVisible(False)
+    def _toggle_agg_target(self):
+        func = self.agg_func.currentText()
+        self.agg_target_combo.setEnabled(func not in ("(нет)", "COUNT(*)"))
+
+    def _toggle_having_ui(self):
+        enabled = self.having_enable.isChecked()
+        self.having_op.setEnabled(enabled)
+        self.having_value.setEnabled(enabled)
+
+    @staticmethod
+    def _is_number(s):
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False
+
+    def _build_agg_expr(self):
+        func_choice = self.agg_func.currentText()
+        target_col = self.agg_target_combo.currentText()
+        if func_choice == "(нет)":
+            return None, None
+        if func_choice == "COUNT(*)":
+            base = "COUNT(*)"
+        elif func_choice == "COUNT":
+            base = f"COUNT({target_col})"
         else:
-            self.where_value_edit.setVisible(True)
+            base = f"{func_choice}({target_col})"
+        alias = self.alias_edit.text().strip()
+        expr = f"{base} AS {alias}" if alias else base
+        return base, expr
 
     def accept_dialog(self):
-        # WHERE
-        if self.where_operator_combo.currentText() in ["IS NULL", "IS NOT NULL"]:
-            self.where_clause = f"{self.where_column_edit.text()} {self.where_operator_combo.currentText()}"
-        else:
-            if self.where_value_edit.text().strip():
-                op = self.where_operator_combo.currentText()
-                if op == "IN":
-                    values = [f"'{v.strip()}'" for v in self.where_value_edit.text().split(",")]
-                    value = f"({', '.join(values)})"
-                else:
-                    try:
-                        float(self.where_value_edit.text())
-                        value = self.where_value_edit.text()
-                    except ValueError:
-                        value = f"'{self.where_value_edit.text()}'"
-                self.where_clause = f"{self.where_column_edit.text()} {op} {value}"
-            else:
-                self.where_clause = None
+        self.group_by_selected = self.gb_check.isChecked()
+        self.group_by_column = self.gb_col_combo.currentText()
+        base_func, expr = self._build_agg_expr()
+        self.aggregate_expression = expr
 
-        # GROUP BY / HAVING
-        if self.group_check.isChecked():
-            self.group_clause = self.selected_column
-            if self.having_value_edit.text().strip():
-                func = self.having_function_combo.currentText()
-                op = self.having_operator_combo.currentText()
-                value = self.having_value_edit.text()
-                self.having_clause = f"{func}(*) {op} {value}"
-            else:
-                self.having_clause = None
+        if self.having_enable.isChecked():
+            if not base_func:
+                QMessageBox.warning(self, "Ошибка", "Для HAVING выберите агрегатную функцию")
+                return
+            op = self.having_op.currentText()
+            val_str = self.having_value.text().strip()
+            if not val_str:
+                QMessageBox.warning(self, "Ошибка", "Введите значение для HAVING")
+                return
+            value = val_str if self._is_number(val_str) else f"'{val_str}'"
+            self.having_clause = f"{base_func} {op} {value}"
         else:
-            self.group_clause = None
             self.having_clause = None
-
-        # Сортировка отсутствует в этом окне
-        self.order_clause = None
 
         self.accept()
 
 
-class SearchDialog(QDialog):
-    """Диалог поиска по таблице с защитой от SQL Injection и SIMILAR TO."""
-    def __init__(self, controller, table_name, columns_info, parent=None):
+class SubqueryDialog(QDialog):
+    """Диалог подзапросов ANY/ALL/EXISTS."""
+    def __init__(self, controller, outer_table, parent=None):
         super().__init__(parent)
         self.controller = controller
-        self.table_name = table_name
-        self.columns_info = columns_info
-        self.search_condition = None
-        self.search_params = []
-        self.setWindowTitle("Поиск")
-        self.setMinimumWidth(500)
+        self.outer_table = outer_table
+        self.setWindowTitle("Конструктор подзапроса")
+        self.setMinimumWidth(620)
+        self.clause = ""
         self.setup_ui()
-        self.center_on_screen()
-
-    def center_on_screen(self):
-        screen = self.screen().geometry()
-        self.move(screen.center() - self.rect().center())
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("<h3>Поиск по таблице</h3>"))
 
+        mode_row = QFormLayout()
+        self.mode_combo = QComboBox()
+        self.mode_combo.setMinimumWidth(180)
+        self.mode_combo.view().setMinimumWidth(210)
+        self.mode_combo.addItems(["EXISTS", "ANY", "ALL"])
+        mode_row.addRow("Оператор подзапроса:", self.mode_combo)
+        layout.addLayout(mode_row)
+
+        # Блок для ANY/ALL
+        self.anyall_group = QGroupBox("Параметры для ANY/ALL")
+        anyall_layout = QFormLayout(self.anyall_group)
+
+        self.outer_col_combo = QComboBox()
+        self.outer_col_combo.setMinimumWidth(180)
+        self.outer_col_combo.view().setMinimumWidth(210)
+        outer_cols = [c['name'] for c in self.controller.get_table_columns(self.outer_table)]
+        self.outer_col_combo.addItems(outer_cols)
+        anyall_layout.addRow("Внешний столбец:", self.outer_col_combo)
+
+        self.comp_op_combo = QComboBox()
+        self.comp_op_combo.setMinimumWidth(120)
+        self.comp_op_combo.view().setMinimumWidth(150)
+        self.comp_op_combo.addItems(["=", "!=", ">", "<", ">=", "<="])
+        anyall_layout.addRow("Оператор сравнения:", self.comp_op_combo)
+        layout.addWidget(self.anyall_group)
+
+        self.sub_table_combo = QComboBox()
+        self.sub_table_combo.setMinimumWidth(220)
+        self.sub_table_combo.view().setMinimumWidth(260)
+        all_tables = self.controller.get_all_tables()
+        all_tables += ['actors', 'plots', 'performances', 'actor_performances', 'game_data']
+        self.sub_table_combo.addItems(sorted(set(all_tables)))
+        layout.addWidget(QLabel("Таблица подзапроса:"))
+        layout.addWidget(self.sub_table_combo)
+
+        self.sub_col_combo = QComboBox()
+        self.sub_col_combo.setMinimumWidth(220)
+        self.sub_col_combo.view().setMinimumWidth(260)
+        layout.addWidget(QLabel("Столбец подзапроса для выборки (ANY/ALL):"))
+        layout.addWidget(self.sub_col_combo)
+
+        layout.addWidget(QLabel("Корреляция (внешний = внутренний):"))
+        corr_layout = QHBoxLayout()
+        self.where_outer_combo = QComboBox()
+        self.where_outer_combo.setMinimumWidth(180)
+        self.where_outer_combo.view().setMinimumWidth(210)
+        self.where_sub_combo = QComboBox()
+        self.where_sub_combo.setMinimumWidth(180)
+        self.where_sub_combo.view().setMinimumWidth(210)
+        corr_layout.addWidget(self.where_outer_combo)
+        corr_layout.addWidget(QLabel("="))
+        corr_layout.addWidget(self.where_sub_combo)
+        layout.addLayout(corr_layout)
+
+        self.filter_value_edit = QLineEdit()
+        self.filter_value_edit.setPlaceholderText("Доп. значение для внутреннего WHERE (опционально)")
+        layout.addWidget(self.filter_value_edit)
+
+        self.mode_combo.currentTextChanged.connect(self._toggle_visibility)
+        self.sub_table_combo.currentTextChanged.connect(self._reload_sub_columns)
+
+        self._reload_sub_columns()
+        self._toggle_visibility(self.mode_combo.currentText())
+
+        btn_layout = QHBoxLayout()
+        build_btn = QPushButton("Добавить условие")
+        cancel_btn = QPushButton("Отмена")
+        btn_layout.addWidget(build_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        build_btn.clicked.connect(self.build_clause)
+        cancel_btn.clicked.connect(self.reject)
+
+    def _reload_sub_columns(self):
+        table = self.sub_table_combo.currentText()
+        cols = [c['name'] for c in self.controller.get_table_columns(table)]
+        self.sub_col_combo.clear()
+        self.sub_col_combo.addItems(cols)
+        self.where_outer_combo.clear()
+        outer_cols = [c['name'] for c in self.controller.get_table_columns(self.outer_table)]
+        self.where_outer_combo.addItems(outer_cols)
+        self.where_sub_combo.clear()
+        self.where_sub_combo.addItems(cols)
+
+    def _toggle_visibility(self, mode):
+        is_exists = (mode == "EXISTS")
+        self.anyall_group.setEnabled(not is_exists)
+        self.sub_col_combo.setEnabled(not is_exists)
+
+    def _quote_if_needed(self, val: str) -> str:
+        v = val.strip()
+        if not v:
+            return "''"
+        try:
+            float(v)
+            return v
+        except Exception:
+            pass
+        if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
+            return v
+        return f"'{v}'"
+
+    def build_clause(self):
+        mode = self.mode_combo.currentText()
+        sub_table = self.sub_table_combo.currentText()
+        sub_alias = "subq"
+        sub_col = self.sub_col_combo.currentText()
+        corr_outer = self.where_outer_combo.currentText()
+        corr_inner = self.where_sub_combo.currentText()
+        extra_val = self.filter_value_edit.text().strip()
+
+        # Внутренний WHERE: всегда корреляция по внешней таблице
+        where_parts = [f"{sub_alias}.{corr_inner} = {self.outer_table}.{corr_outer}"]
+        # Дополнительное условие — фильтр по самому столбцу подзапроса, а не по corr_inner
+        if extra_val:
+            where_parts.append(f"{sub_alias}.{sub_col} = {self._quote_if_needed(extra_val)}")
+        where_clause = " AND ".join(where_parts)
+
+        if mode == "EXISTS":
+            self.clause = f"EXISTS (SELECT 1 FROM {sub_table} AS {sub_alias} WHERE {where_clause})"
+        else:
+            outer_col = self.outer_col_combo.currentText()
+            comp = self.comp_op_combo.currentText()
+            # ANY/ALL сравнивают внешний столбец с выборкой одного столбца из подзапроса
+            self.clause = (
+                f"{self.outer_table}.{outer_col} {comp} {mode} "
+                f"(SELECT {sub_alias}.{sub_col} FROM {sub_table} AS {sub_alias} WHERE {where_clause})"
+            )
+        self.accept()
+
+    def get_clause(self):
+        return self.clause
+
+
+class CaseExpressionDialog(QDialog):
+    """Конструктор CASE + COALESCE + NULLIF (CASE — необязателен)."""
+    def __init__(self, controller, table_name, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.table_name = table_name
+        self.setWindowTitle("Конструктор CASE / COALESCE / NULLIF")
+        self.setMinimumWidth(700)
+        self.when_rows = []
+        self.case_alias_edit = None
+        self.else_edit = None
+        self.coalesce_value_edit = None
+        self.nullif_first_edit = None
+        self.nullif_second_edit = None
+        self.case_group = None
+        self.case_enable_check = None
+        self.final_expr = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
         checkbox_style = """
                 QCheckBox { color: #333333; }
                 QCheckBox::indicator {
@@ -2259,114 +2428,193 @@ class SearchDialog(QDialog):
                 }
                 """
 
-        form_layout = QFormLayout()
-        self.column_combo = QComboBox()
-        self.column_combo.setMinimumWidth(200)
-        self.column_combo.view().setMinimumWidth(250)
-        self.column_combo.addItems([col['name'] for col in self.columns_info])
-        form_layout.addRow("Столбец:", self.column_combo)
+        self.case_enable_check = QCheckBox("Использовать CASE (WHEN ... THEN ...)")
+        self.case_enable_check.setChecked(True)
+        self.case_enable_check.setStyleSheet(checkbox_style)
+        layout.addWidget(self.case_enable_check)
 
-        self.search_type_combo = QComboBox()
-        self.search_type_combo.setMinimumWidth(220)
-        self.search_type_combo.view().setMinimumWidth(260)
-        self.search_type_combo.addItems([
-            "LIKE (шаблонный поиск)",
-            "~ (регулярка)",
-            "~* (регулярка без учета регистра)",
-            "!~ (не соответствует)",
-            "!~* (не соответствует без учета регистра)",
-            "= (точное совпадение)"
-        ])
-        form_layout.addRow("Тип поиска:", self.search_type_combo)
+        self.case_group = QGroupBox("CASE выражение")
+        case_layout = QVBoxLayout(self.case_group)
 
-        self.search_text = QLineEdit()
-        self.search_text.setPlaceholderText("Введите текст для поиска...")
-        form_layout.addRow("Текст:", self.search_text)
+        case_layout.addWidget(QLabel("Условия WHEN ... THEN ..."))
+        self.when_container = QVBoxLayout()
+        case_layout.addLayout(self.when_container)
 
-        layout.addLayout(form_layout)
+        add_when_btn = QPushButton("Добавить WHEN")
+        add_when_btn.clicked.connect(self.add_when_row)
+        case_layout.addWidget(add_when_btn)
 
-        hint_label = QLabel(
-            "<i><b>Подсказка:</b><br>"
-            "• LIKE: используйте % (пример: %текст%)<br>"
-            "• ~: POSIX регулярное выражение<br>"
-            "• ~*: регулярка без учета регистра</i>"
-        )
-        hint_label.setWordWrap(True)
-        layout.addWidget(hint_label)
+        case_layout.addWidget(QLabel("Значение ELSE (опционально):"))
+        self.else_edit = QLineEdit()
+        case_layout.addWidget(self.else_edit)
 
-        # SIMILAR TO
-        self.regex_group = QGroupBox("SIMILAR TO")
-        regex_layout = QVBoxLayout(self.regex_group)
-        self.regex_column_combo = QComboBox()
-        self.regex_column_combo.setMinimumWidth(200)
-        self.regex_column_combo.view().setMinimumWidth(250)
-        self.regex_pattern_edit = QLineEdit()
-        self.regex_pattern_edit.setPlaceholderText("Шаблон (например: '(Р|Г)%')")
-        self.regex_not_checkbox = QCheckBox("NOT SIMILAR TO")
-        self.regex_not_checkbox.setStyleSheet(checkbox_style)
+        layout.addWidget(self.case_group)
 
-        cols = [c['name'] for c in self.controller.get_table_columns(self.table_name)]
-        self.regex_column_combo.addItems(cols)
-        regex_layout.addWidget(QLabel("Столбец"))
-        regex_layout.addWidget(self.regex_column_combo)
-        regex_layout.addWidget(QLabel("Шаблон"))
-        regex_layout.addWidget(self.regex_pattern_edit)
-        regex_layout.addWidget(self.regex_not_checkbox)
-        layout.addWidget(self.regex_group)
+        layout.addWidget(QLabel("Алиас (имя нового столбца):"))
+        self.case_alias_edit = QLineEdit()
+        layout.addWidget(self.case_alias_edit)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept_dialog)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        layout.addWidget(QLabel("COALESCE значение (подставить вместо NULL, опционально):"))
+        self.coalesce_value_edit = QLineEdit()
+        layout.addWidget(self.coalesce_value_edit)
 
-    def accept_dialog(self):
-        # SIMILAR TO (парам. вариант)
-        pattern = self.regex_pattern_edit.text().strip()
-        if pattern:
-            col = self.regex_column_combo.currentText()
-            not_part = "NOT " if self.regex_not_checkbox.isChecked() else ""
-            self.search_condition = f"{col} {not_part}SIMILAR TO %s"
-            self.search_params = [pattern]
-            self.accept()
+        layout.addWidget(QLabel("NULLIF (если expr1 == expr2 -> NULL, опционально):"))
+        nullif_layout = QHBoxLayout()
+        self.nullif_first_edit = QLineEdit()
+        self.nullif_first_edit.setPlaceholderText("expr1 (обычно имя столбца)")
+        self.nullif_second_edit = QLineEdit()
+        self.nullif_second_edit.setPlaceholderText("expr2")
+        nullif_layout.addWidget(self.nullif_first_edit)
+        nullif_layout.addWidget(self.nullif_second_edit)
+        layout.addLayout(nullif_layout)
+
+        btn_layout = QHBoxLayout()
+        build_btn = QPushButton("Добавить выражение")
+        cancel_btn = QPushButton("Отмена")
+        btn_layout.addWidget(build_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        build_btn.clicked.connect(self.build_expression)
+        cancel_btn.clicked.connect(self.reject)
+
+        self.case_enable_check.stateChanged.connect(self._toggle_case_block)
+
+        self.add_when_row()
+
+    def _toggle_case_block(self, state):
+        enabled = state == Qt.Checked
+        self.case_group.setEnabled(enabled)
+
+    def add_when_row(self):
+        row_layout = QHBoxLayout()
+        cols_info = self.controller.get_table_columns(self.table_name)
+
+        col_combo = QComboBox()
+        col_combo.setMinimumWidth(150)
+        col_combo.view().setMinimumWidth(180)
+        col_combo.addItems([c['name'] for c in cols_info])
+
+        op_combo = QComboBox()
+        op_combo.setMinimumWidth(120)
+        op_combo.view().setMinimumWidth(150)
+        op_combo.addItems(["=", "!=", ">", "<", ">=", "<=", "IS NULL", "IS NOT NULL"])
+
+        when_value_edit = QLineEdit()
+        when_value_edit.setPlaceholderText("Значение для сравнения (кроме IS NULL)")
+
+        then_value_edit = QLineEdit()
+        then_value_edit.setPlaceholderText("THEN (результат)")
+
+        row_layout.addWidget(col_combo)
+        row_layout.addWidget(op_combo)
+        row_layout.addWidget(when_value_edit)
+        row_layout.addWidget(QLabel("THEN"))
+        row_layout.addWidget(then_value_edit)
+
+        self.when_container.addLayout(row_layout)
+        self.when_rows.append((col_combo, op_combo, when_value_edit, then_value_edit))
+
+    def _quote_if_needed(self, val: str):
+        if val is None:
+            return "NULL"
+        val = val.strip()
+        if val == "":
+            return "''"
+        try:
+            float(val)
+            return val
+        except Exception:
+            pass
+        if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
+            return val
+        return f"'{val}'"
+
+    def build_expression(self):
+        use_case = self.case_enable_check.isChecked()
+        expr = None
+        has_when = False
+
+        if use_case:
+            parts = ["CASE"]
+            for col_combo, op_combo, when_edit, then_edit in self.when_rows:
+                col = col_combo.currentText()
+                op = op_combo.currentText()
+                when_raw = when_edit.text().strip()
+                then_raw = then_edit.text().strip()
+
+                if op in ("IS NULL", "IS NOT NULL"):
+                    if not then_raw:
+                        continue
+                    parts.append(f"WHEN {self.table_name}.{col} {op} THEN {self._quote_if_needed(then_raw)}")
+                    has_when = True
+                else:
+                    if not when_raw or not then_raw:
+                        continue
+                    q_when = self._quote_if_needed(when_raw)
+                    parts.append(f"WHEN {self.table_name}.{col} {op} {q_when} THEN {self._quote_if_needed(then_raw)}")
+                    has_when = True
+
+            if not has_when:
+                QMessageBox.warning(
+                    self,
+                    "Ошибка",
+                    "Если CASE включён, необходимо добавить хотя бы одно корректное условие WHEN ... THEN ...\n"
+                    "Либо отключите CASE (снимите галочку), чтобы использовать только COALESCE/NULLIF."
+                )
+                return
+
+            else_val = self.else_edit.text().strip()
+            if else_val:
+                parts.append(f"ELSE {self._quote_if_needed(else_val)}")
+            parts.append("END")
+            expr = " ".join(parts)
+
+        n1 = self.nullif_first_edit.text().strip()
+        n2 = self.nullif_second_edit.text().strip()
+        if n1 and n2:
+            # NULLIF всегда должен сравнивать исходный столбец/выражение с expr2
+            base_for_nullif = expr if expr else n1
+            expr = f"NULLIF({base_for_nullif}, {self._quote_if_needed(n2)})"
+
+        coalesce_val = self.coalesce_value_edit.text().strip()
+        if coalesce_val:
+            # Для COALESCE базой служит либо результат CASE/NULLIF, либо
+            # непосредственно столбец/выражение, если CASE/NULLIF не заданы.
+            # Так мы меняем только NULL, но не подменяем реальные значения.
+            if expr is None:
+                base_for_coalesce = n1 if n1 else None
+            else:
+                base_for_coalesce = expr
+
+            if base_for_coalesce is None:
+                QMessageBox.warning(
+                    self,
+                    "Ошибка",
+                    "Для COALESCE необходимо указать столбец (expr1) или включить CASE/NULLIF."
+                )
+                return
+
+            expr = f"COALESCE({base_for_coalesce}, {self._quote_if_needed(coalesce_val)})"
+
+        if expr is None:
+            QMessageBox.warning(
+                self,
+                "Ошибка",
+                "Ничего не задано: включите CASE или заполните поля COALESCE/NULLIF."
+            )
             return
 
-        # обычный поиск
-        column = self.column_combo.currentText()
-        search_text = self.search_text.text().strip()
-        if not search_text:
-            QMessageBox.warning(self, "Ошибка", "Введите текст для поиска или заполните блок SIMILAR TO")
-            return
+        alias = self.case_alias_edit.text().strip()
+        if alias:
+            expr = f"{expr} AS {alias}"
 
-        st = self.search_type_combo.currentText()
-        if "LIKE" in st:
-            self.search_condition = f"{column} LIKE %s"
-            self.search_params = [f"%{search_text}%"]
-        elif "~*" in st and "!" in st:
-            self.search_condition = f"{column} !~* %s"
-            self.search_params = [search_text]
-        elif "~*" in st:
-            self.search_condition = f"{column} ~* %s"
-            self.search_params = [search_text]
-        elif "!~" in st:
-            self.search_condition = f"{column} !~ %s"
-            self.search_params = [search_text]
-        elif "~" in st:
-            self.search_condition = f"{column} ~ %s"
-            self.search_params = [search_text]
-        else:
-            self.search_condition = f"{column} = %s"
-            self.search_params = [search_text]
-
+        self.final_expr = expr
         self.accept()
 
 
 class TypeManagementDialog(QDialog):
-    """
-    Компактный диалог управления типами данных:
-    - слева список типов (фильтр: все / enum / composite)
-    - двойной клик по типу открывает окно редактирования конкретного типа
-    - внизу мини-форма для создания нового типа (ENUM или составной)
-    """
+    """Диалог управления пользовательскими типами (ENUM и составные)."""
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -2432,10 +2680,18 @@ class TypeManagementDialog(QDialog):
         self.composite_fields_group.setVisible(False)
         comp_outer_layout = QVBoxLayout(self.composite_fields_group)
 
-        self.comp_fields_layout = QVBoxLayout()
-        comp_outer_layout.addLayout(self.comp_fields_layout)
+        # Делаем область полей прокручиваемой и не сжимающейся по высоте
+        self.comp_scroll = QScrollArea()
+        self.comp_scroll.setWidgetResizable(True)
+        comp_inner = QWidget()
+        self.comp_fields_layout = QVBoxLayout(comp_inner)
+        self.comp_fields_layout.setContentsMargins(0, 0, 0, 0)
+        self.comp_fields_layout.setSpacing(4)
+        self.comp_scroll.setWidget(comp_inner)
+        comp_outer_layout.addWidget(self.comp_scroll)
 
         add_field_btn = QPushButton("Добавить поле")
+        add_field_btn.setMinimumWidth(140)
         add_field_btn.clicked.connect(self.add_composite_field_row)
         comp_outer_layout.addWidget(add_field_btn)
 
@@ -2483,47 +2739,44 @@ class TypeManagementDialog(QDialog):
         self.new_enum_values.setEnabled(not is_comp)
 
     def add_composite_field_row(self):
-        """Добавляет строку для ввода одного поля составного типа."""
-        row = QHBoxLayout()
+        # Строка полей составного типа: имя + тип, с нормальной шириной
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+
         name_edit = QLineEdit()
-        name_edit.setPlaceholderText("имя_поля")
+        name_edit.setPlaceholderText("имя поля")
+        name_edit.setMinimumWidth(180)
+        name_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
         type_combo = QComboBox()
-        type_combo.setMinimumWidth(140)
+        type_combo.setMinimumWidth(160)
         type_combo.view().setMinimumWidth(200)
-        type_combo.addItems([
-            "INTEGER", "BIGINT", "NUMERIC", "TEXT", "VARCHAR(100)", "VARCHAR(200)",
-            "BOOLEAN", "DATE", "TIMESTAMP"
-        ])
-        # возможность ввода своего типа (в т.ч. enum)
-        type_combo.setEditable(True)
+        basic_types = [
+            "INTEGER", "BIGINT", "NUMERIC(10,2)", "BOOLEAN",
+            "VARCHAR(100)", "TEXT", "DATE", "TIMESTAMP"
+        ]
+        # Пользовательские типы добавляем в конец списка
+        type_combo.addItems(basic_types + list(self.controller.list_enum_types()) + list(self.controller.list_composite_types()))
 
-        remove_btn = QPushButton("−")
-        remove_btn.setFixedWidth(28)
+        remove_btn = QPushButton("✕")
+        remove_btn.setFixedWidth(24)
+        remove_btn.setToolTip("Удалить поле")
 
-        def remove_row():
-            # удаляем виджеты и layout
-            for w in (name_edit, type_combo, remove_btn):
-                w.setParent(None)
-                w.deleteLater()
-            # удалить сам layout из контейнера
-            idx = -1
-            for i in range(self.comp_fields_layout.count()):
-                if self.comp_fields_layout.itemAt(i).layout() is row:
-                    idx = i
-                    break
-            if idx >= 0:
-                item = self.comp_fields_layout.takeAt(idx)
-                del item
+        row_layout.addWidget(name_edit)
+        row_layout.addWidget(type_combo)
+        row_layout.addWidget(remove_btn)
 
-        remove_btn.clicked.connect(remove_row)
+        self.comp_fields_layout.addWidget(row_widget)
 
-        row.addWidget(QLabel("Имя:"))
-        row.addWidget(name_edit)
-        row.addWidget(QLabel("Тип:"))
-        row.addWidget(type_combo)
-        row.addWidget(remove_btn)
+        def _remove_row():
+            row_widget.setParent(None)
 
-        self.comp_fields_layout.addLayout(row)
+        remove_btn.clicked.connect(_remove_row)
+
+        # для удобства добавления новых строк — показываем все строки, не сжимая их
+        self.comp_fields_layout.setRowStretch(self.comp_fields_layout.count() - 1, 1)
 
     def refresh_types(self):
         self.types_list.clear()
@@ -3098,8 +3351,7 @@ class SelectTableDialog(QDialog):
             color: white;
         }
         QCheckBox::indicator {
-            width: 14px;
-            height: 14px;
+            width: 14px; height: 14px;
             border: 1px solid #c0c0c0;
             border-radius: 3px;
             background: white;
@@ -3140,15 +3392,15 @@ class SelectTableDialog(QDialog):
             return
         while vlayout.count():
             item = vlayout.takeAt(vlayout.count() - 1)
-            if not item:
+            if item is None:
                 continue
             w = item.widget()
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
-            child = item.layout()
-            if child is not None:
-                self._clear_layout_safe(child)
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._clear_layout_safe(child_layout)
 
     def _populate_column_checkboxes(self, table_name):
         """Переиспользует один и тот же контейнер для чекбоксов, предотвращая удаление C++ объектов."""
@@ -3249,10 +3501,9 @@ class JoinWizardDialog(QDialog):
         self.join_table_combo.setMinimumWidth(200)
         self.join_table_combo.view().setMinimumWidth(240)
         all_tables = self.controller.get_all_tables()
-        other_tables = [t for t in all_tables if t != self.base_table]
-        self.join_table_combo.addItems(other_tables)
+        self.join_table_combo.addItems(all_tables)
 
-        if 'task2' in other_tables:
+        if 'task2' in all_tables:
             self.join_table_combo.setCurrentText('task2')
 
         join_table_layout.addWidget(self.join_table_combo)
@@ -3322,6 +3573,7 @@ class JoinWizardDialog(QDialog):
 
         # ---- базовая таблица
         base_group = QGroupBox(f"Столбцы таблицы {self.base_table}")
+        base_group.setStyleSheet("QGroupBox{color:#000000;}")
         base_layout = QVBoxLayout(base_group)
         base_scroll = QScrollArea()
         base_scroll.setWidgetResizable(True)
@@ -3345,6 +3597,7 @@ class JoinWizardDialog(QDialog):
 
         # ---- присоединяемая таблица
         join_group = QGroupBox(f"Столбцы присоединяемой таблицы")
+        join_group.setStyleSheet("QGroupBox{color:#000000;}")
         join_layout = QVBoxLayout(join_group)
         self.join_scroll = QScrollArea()
         self.join_scroll.setWidgetResizable(True)
@@ -3888,618 +4141,3 @@ class ColumnActionsDialog(QDialog):
             if expr:
                 self.task_dialog.add_select_expression(expr)
                 self.task_dialog.refresh_with_current_clauses()
-
-
-class SortDialog(QDialog):
-    """Диалог сортировки по столбцу."""
-    def __init__(self, column, parent=None):
-        super().__init__(parent)
-        self.column = column
-        self.direction = "ASC"
-        self.setWindowTitle(f"Сортировка: {self.column}")
-        self.setMinimumWidth(180)
-        self.setup_ui()
-        self.center_on_screen()
-
-    def center_on_screen(self):
-        screen = self.screen().geometry()
-        self.move(screen.center() - self.rect().center())
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-
-        form = QFormLayout()
-        self.dir_combo = QComboBox()
-        self.dir_combo.setMinimumWidth(120)
-        self.dir_combo.view().setMinimumWidth(150)
-        self.dir_combo.addItems(["ASC", "DESC"])
-        form.addRow("Направление:", self.dir_combo)
-        layout.addLayout(form)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept_dialog)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def accept_dialog(self):
-        self.direction = self.dir_combo.currentText()
-        self.accept()
-
-
-class FilterDialog(QDialog):
-    """Диалог фильтрации WHERE для одного столбца."""
-    def __init__(self, column, prefill_value="", parent=None):
-        super().__init__(parent)
-        self.column = column
-        self.prefill_value = prefill_value
-        self.where_clause = None
-
-        self.setWindowTitle(f"Фильтрация (WHERE): {self.column}")
-        self.setMinimumWidth(520)
-        self.setup_ui()
-        self.center_on_screen()
-
-    def center_on_screen(self):
-        screen = self.screen().geometry()
-        self.move(screen.center() - self.rect().center())
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-
-        form = QFormLayout()
-
-        self.op_combo = QComboBox()
-        self.op_combo.setMinimumWidth(150)
-        self.op_combo.view().setMinimumWidth(180)
-        self.op_combo.addItems(["=", "!=", "<", "<=", ">", ">=", "IN", "IS NULL", "IS NOT NULL"])
-        form.addRow("Оператор:", self.op_combo)
-
-        self.value_edit = QLineEdit()
-        if self.prefill_value:
-            self.value_edit.setText(self.prefill_value)
-        form.addRow("Значение:", self.value_edit)
-
-        layout.addLayout(form)
-
-        self.op_combo.currentTextChanged.connect(self._toggle_value)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept_dialog)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        self._toggle_value(self.op_combo.currentText())
-
-    def _toggle_value(self, op):
-        self.value_edit.setVisible(op not in ("IS NULL", "IS NOT NULL"))
-
-    def accept_dialog(self):
-        op = self.op_combo.currentText()
-        if op in ("IS NULL", "IS NOT NULL"):
-            self.where_clause = f"{self.column} {op}"
-        else:
-            val = self.value_edit.text().strip()
-            if not val:
-                QMessageBox.warning(self, "Ошибка", "Введите значение фильтра")
-                return
-            if op == "IN":
-                parts = [p.strip() for p in val.split(",") if p.strip()]
-                quoted = ", ".join([f"'{p}'" if not self._is_number(p) else p for p in parts])
-                self.where_clause = f"{self.column} IN ({quoted})"
-            else:
-                value = val if self._is_number(val) else f"'{val}'"
-                self.where_clause = f"{self.column} {op} {value}"
-        self.accept()
-
-    @staticmethod
-    def _is_number(s):
-        try:
-            float(s)
-            return True
-        except ValueError:
-            return False
-
-
-class GroupDialog(QDialog):
-    """Диалог группировки с выбором агрегатной функции и HAVING."""
-    def __init__(self, column, columns_info, parent=None):
-        super().__init__(parent)
-        self.column = column
-        self.columns_info = columns_info
-        self.group_by_selected = True
-        self.group_by_column = column
-        self.aggregate_expression = None
-        self.having_clause = None
-
-        self.setWindowTitle(f"Группировка: {self.column}")
-        self.setMinimumWidth(640)
-        self.setup_ui()
-        self.center_on_screen()
-
-    def center_on_screen(self):
-        screen = self.screen().geometry()
-        self.move(screen.center() - self.rect().center())
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        checkbox_style = """
-        QCheckBox { color: #333333; }
-        QCheckBox::indicator {
-            width: 14px; height: 14px;
-            border: 1px solid #c0c0c0; border-radius: 3px; background: white;
-        }
-        QCheckBox::indicator:checked {
-            background-color: #4a86e8; border: 1px solid #2a66c8;
-        }
-        """
-
-        gb_group = QGroupBox("Группировка (GROUP BY)")
-        gb_group.setStyleSheet("color: #333333;")
-        gb_layout = QFormLayout(gb_group)
-
-        self.gb_check = QCheckBox("Включить GROUP BY")
-        self.gb_check.setChecked(True)
-        self.gb_check.setStyleSheet(checkbox_style)
-        gb_layout.addRow(self.gb_check)
-
-        self.gb_col_combo = QComboBox()
-        self.gb_col_combo.setMinimumWidth(200)
-        self.gb_col_combo.view().setMinimumWidth(240)
-        self.gb_col_combo.addItems([c['name'] for c in self.columns_info])
-        self.gb_col_combo.setCurrentText(self.column)
-        gb_layout.addRow("Столбец для группировки:", self.gb_col_combo)
-        layout.addWidget(gb_group)
-
-        agg_group = QGroupBox("Агрегатная функция")
-        agg_group.setStyleSheet("color: #333333;")
-        agg_form = QFormLayout(agg_group)
-
-        self.agg_func = QComboBox()
-        self.agg_func.setMinimumWidth(200)
-        self.agg_func.view().setMinimumWidth(240)
-        self.agg_func.addItems(["(нет)", "COUNT(*)", "COUNT", "SUM", "AVG", "MIN", "MAX"])
-        agg_form.addRow("Функция:", self.agg_func)
-
-        self.agg_target_combo = QComboBox()
-        self.agg_target_combo.setMinimumWidth(200)
-        self.agg_target_combo.view().setMinimumWidth(240)
-        self.agg_target_combo.addItems([c['name'] for c in self.columns_info])
-        self.agg_target_combo.setCurrentText(self.column)
-        agg_form.addRow("Столбец для агрегата:", self.agg_target_combo)
-
-        self.alias_edit = QLineEdit()
-        agg_form.addRow("Псевдоним:", self.alias_edit)
-        layout.addWidget(agg_group)
-
-        having_group = QGroupBox("Фильтрация групп (HAVING)")
-        having_group.setStyleSheet("color: #333333;")
-        having_form = QFormLayout(having_group)
-
-        self.having_enable = QCheckBox("Включить HAVING")
-        self.having_enable.setChecked(False)
-        self.having_enable.setStyleSheet(checkbox_style)
-        having_form.addRow(self.having_enable)
-
-        self.having_op = QComboBox()
-        self.having_op.setMinimumWidth(140)
-        self.having_op.view().setMinimumWidth(170)
-        self.having_op.addItems(["=", "!=", "<", "<=", ">", ">="])
-        having_form.addRow("Оператор:", self.having_op)
-
-        self.having_value = QLineEdit()
-        having_form.addRow("Значение:", self.having_value)
-        layout.addWidget(having_group)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept_dialog)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        self._toggle_agg_target()
-        self.agg_func.currentTextChanged.connect(self._toggle_agg_target)
-        self._toggle_having_ui()
-        self.having_enable.stateChanged.connect(self._toggle_having_ui)
-
-    def _toggle_agg_target(self):
-        func = self.agg_func.currentText()
-        self.agg_target_combo.setEnabled(func not in ("(нет)", "COUNT(*)"))
-
-    def _toggle_having_ui(self):
-        enabled = self.having_enable.isChecked()
-        self.having_op.setEnabled(enabled)
-        self.having_value.setEnabled(enabled)
-
-    @staticmethod
-    def _is_number(s):
-        try:
-            float(s)
-            return True
-        except ValueError:
-            return False
-
-    def _build_agg_expr(self):
-        func_choice = self.agg_func.currentText()
-        target_col = self.agg_target_combo.currentText()
-        if func_choice == "(нет)":
-            return None, None
-        if func_choice == "COUNT(*)":
-            base = "COUNT(*)"
-        elif func_choice == "COUNT":
-            base = f"COUNT({target_col})"
-        else:
-            base = f"{func_choice}({target_col})"
-        alias = self.alias_edit.text().strip()
-        expr = f"{base} AS {alias}" if alias else base
-        return base, expr
-
-    def accept_dialog(self):
-        self.group_by_selected = self.gb_check.isChecked()
-        self.group_by_column = self.gb_col_combo.currentText()
-        base_func, expr = self._build_agg_expr()
-        self.aggregate_expression = expr
-
-        if self.having_enable.isChecked():
-            if not base_func:
-                QMessageBox.warning(self, "Ошибка", "Для HAVING выберите агрегатную функцию")
-                return
-            op = self.having_op.currentText()
-            val_str = self.having_value.text().strip()
-            if not val_str:
-                QMessageBox.warning(self, "Ошибка", "Введите значение для HAVING")
-                return
-            value = val_str if self._is_number(val_str) else f"'{val_str}'"
-            self.having_clause = f"{base_func} {op} {value}"
-        else:
-            self.having_clause = None
-
-        self.accept()
-
-
-class SubqueryDialog(QDialog):
-    """Диалог подзапросов ANY/ALL/EXISTS."""
-    def __init__(self, controller, outer_table, parent=None):
-        super().__init__(parent)
-        self.controller = controller
-        self.outer_table = outer_table
-        self.setWindowTitle("Конструктор подзапроса")
-        self.setMinimumWidth(620)
-        self.clause = ""
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-
-        mode_row = QFormLayout()
-        self.mode_combo = QComboBox()
-        self.mode_combo.setMinimumWidth(180)
-        self.mode_combo.view().setMinimumWidth(210)
-        self.mode_combo.addItems(["EXISTS", "ANY", "ALL"])
-        mode_row.addRow("Оператор подзапроса:", self.mode_combo)
-        layout.addLayout(mode_row)
-
-        # Блок для ANY/ALL
-        self.anyall_group = QGroupBox("Параметры для ANY/ALL")
-        anyall_layout = QFormLayout(self.anyall_group)
-
-        self.outer_col_combo = QComboBox()
-        self.outer_col_combo.setMinimumWidth(180)
-        self.outer_col_combo.view().setMinimumWidth(210)
-        outer_cols = [c['name'] for c in self.controller.get_table_columns(self.outer_table)]
-        self.outer_col_combo.addItems(outer_cols)
-        anyall_layout.addRow("Внешний столбец:", self.outer_col_combo)
-
-        self.comp_op_combo = QComboBox()
-        self.comp_op_combo.setMinimumWidth(120)
-        self.comp_op_combo.view().setMinimumWidth(150)
-        self.comp_op_combo.addItems(["=", "!=", ">", "<", ">=", "<="])
-        anyall_layout.addRow("Оператор сравнения:", self.comp_op_combo)
-        layout.addWidget(self.anyall_group)
-
-        self.sub_table_combo = QComboBox()
-        self.sub_table_combo.setMinimumWidth(220)
-        self.sub_table_combo.view().setMinimumWidth(260)
-        all_tables = self.controller.get_all_tables()
-        all_tables += ['actors', 'plots', 'performances', 'actor_performances', 'game_data']
-        self.sub_table_combo.addItems(sorted(set(all_tables)))
-        layout.addWidget(QLabel("Таблица подзапроса:"))
-        layout.addWidget(self.sub_table_combo)
-
-        self.sub_col_combo = QComboBox()
-        self.sub_col_combo.setMinimumWidth(220)
-        self.sub_col_combo.view().setMinimumWidth(260)
-        layout.addWidget(QLabel("Столбец подзапроса для выборки (ANY/ALL):"))
-        layout.addWidget(self.sub_col_combo)
-
-        layout.addWidget(QLabel("Корреляция (внешний = внутренний):"))
-        corr_layout = QHBoxLayout()
-        self.where_outer_combo = QComboBox()
-        self.where_outer_combo.setMinimumWidth(180)
-        self.where_outer_combo.view().setMinimumWidth(210)
-        self.where_sub_combo = QComboBox()
-        self.where_sub_combo.setMinimumWidth(180)
-        self.where_sub_combo.view().setMinimumWidth(210)
-        corr_layout.addWidget(self.where_outer_combo)
-        corr_layout.addWidget(QLabel("="))
-        corr_layout.addWidget(self.where_sub_combo)
-        layout.addLayout(corr_layout)
-
-        self.filter_value_edit = QLineEdit()
-        self.filter_value_edit.setPlaceholderText("Доп. значение для внутреннего WHERE (опционально)")
-        layout.addWidget(self.filter_value_edit)
-
-        self.mode_combo.currentTextChanged.connect(self._toggle_visibility)
-        self.sub_table_combo.currentTextChanged.connect(self._reload_sub_columns)
-
-        self._reload_sub_columns()
-        self._toggle_visibility(self.mode_combo.currentText())
-
-        btn_layout = QHBoxLayout()
-        build_btn = QPushButton("Добавить условие")
-        cancel_btn = QPushButton("Отмена")
-        btn_layout.addWidget(build_btn)
-        btn_layout.addWidget(cancel_btn)
-        layout.addLayout(btn_layout)
-
-        build_btn.clicked.connect(self.build_clause)
-        cancel_btn.clicked.connect(self.reject)
-
-    def _reload_sub_columns(self):
-        table = self.sub_table_combo.currentText()
-        cols = [c['name'] for c in self.controller.get_table_columns(table)]
-        self.sub_col_combo.clear()
-        self.sub_col_combo.addItems(cols)
-        self.where_outer_combo.clear()
-        outer_cols = [c['name'] for c in self.controller.get_table_columns(self.outer_table)]
-        self.where_outer_combo.addItems(outer_cols)
-        self.where_sub_combo.clear()
-        self.where_sub_combo.addItems(cols)
-
-    def _toggle_visibility(self, mode):
-        is_exists = (mode == "EXISTS")
-        self.anyall_group.setEnabled(not is_exists)
-        self.sub_col_combo.setEnabled(not is_exists)
-
-    def _quote_if_needed(self, val: str) -> str:
-        v = val.strip()
-        if not v:
-            return "''"
-        try:
-            float(v)
-            return v
-        except Exception:
-            pass
-        if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
-            return v
-        return f"'{v}'"
-
-    def build_clause(self):
-        mode = self.mode_combo.currentText()
-        sub_table = self.sub_table_combo.currentText()
-        sub_alias = "subq"
-        sub_col = self.sub_col_combo.currentText()
-        corr_outer = self.where_outer_combo.currentText()
-        corr_inner = self.where_sub_combo.currentText()
-        extra_val = self.filter_value_edit.text().strip()
-
-        where_parts = [f"{sub_alias}.{corr_inner} = {self.outer_table}.{corr_outer}"]
-        if extra_val:
-            where_parts.append(f"{sub_alias}.{corr_inner} = {self._quote_if_needed(extra_val)}")
-        where_clause = " AND ".join(where_parts)
-
-        if mode == "EXISTS":
-            self.clause = f"EXISTS (SELECT 1 FROM {sub_table} AS {sub_alias} WHERE {where_clause})"
-        else:
-            outer_col = self.outer_col_combo.currentText()
-            comp = self.comp_op_combo.currentText()
-            self.clause = (
-                f"{self.outer_table}.{outer_col} {comp} {mode} "
-                f"(SELECT {sub_alias}.{sub_col} FROM {sub_table} AS {sub_alias} WHERE {where_clause})"
-            )
-        self.accept()
-
-    def get_clause(self):
-        return self.clause
-
-
-class CaseExpressionDialog(QDialog):
-    """Конструктор CASE + COALESCE + NULLIF (CASE — необязателен)."""
-    def __init__(self, controller, table_name, parent=None):
-        super().__init__(parent)
-        self.controller = controller
-        self.table_name = table_name
-        self.setWindowTitle("Конструктор CASE / COALESCE / NULLIF")
-        self.setMinimumWidth(700)
-        self.when_rows = []
-        self.case_alias_edit = None
-        self.else_edit = None
-        self.coalesce_value_edit = None
-        self.nullif_first_edit = None
-        self.nullif_second_edit = None
-        self.case_group = None
-        self.case_enable_check = None
-        self.final_expr = None
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        checkbox_style = """
-                QCheckBox { color: #333333; }
-                QCheckBox::indicator {
-                    width: 14px; height: 14px;
-                    border: 1px solid #c0c0c0; border-radius: 3px; background: white;
-                }
-                QCheckBox::indicator:checked {
-                    background-color: #4a86e8; border: 1px solid #2a66c8;
-                }
-                """
-
-        self.case_enable_check = QCheckBox("Использовать CASE (WHEN ... THEN ...)")
-        self.case_enable_check.setChecked(True)
-        self.case_enable_check.setStyleSheet(checkbox_style)
-        layout.addWidget(self.case_enable_check)
-
-        self.case_group = QGroupBox("CASE выражение")
-        case_layout = QVBoxLayout(self.case_group)
-
-        case_layout.addWidget(QLabel("Условия WHEN ... THEN ..."))
-        self.when_container = QVBoxLayout()
-        case_layout.addLayout(self.when_container)
-
-        add_when_btn = QPushButton("Добавить WHEN")
-        add_when_btn.clicked.connect(self.add_when_row)
-        case_layout.addWidget(add_when_btn)
-
-        case_layout.addWidget(QLabel("Значение ELSE (опционально):"))
-        self.else_edit = QLineEdit()
-        case_layout.addWidget(self.else_edit)
-
-        layout.addWidget(self.case_group)
-
-        layout.addWidget(QLabel("Алиас (имя нового столбца):"))
-        self.case_alias_edit = QLineEdit()
-        layout.addWidget(self.case_alias_edit)
-
-        layout.addWidget(QLabel("COALESCE значение (подставить вместо NULL, опционально):"))
-        self.coalesce_value_edit = QLineEdit()
-        layout.addWidget(self.coalesce_value_edit)
-
-        layout.addWidget(QLabel("NULLIF (если expr1 == expr2 -> NULL, опционально):"))
-        nullif_layout = QHBoxLayout()
-        self.nullif_first_edit = QLineEdit()
-        self.nullif_first_edit.setPlaceholderText("expr1 (обычно имя столбца)")
-        self.nullif_second_edit = QLineEdit()
-        self.nullif_second_edit.setPlaceholderText("expr2")
-        nullif_layout.addWidget(self.nullif_first_edit)
-        nullif_layout.addWidget(self.nullif_second_edit)
-        layout.addLayout(nullif_layout)
-
-        btn_layout = QHBoxLayout()
-        build_btn = QPushButton("Добавить выражение")
-        cancel_btn = QPushButton("Отмена")
-        btn_layout.addWidget(build_btn)
-        btn_layout.addWidget(cancel_btn)
-        layout.addLayout(btn_layout)
-
-        build_btn.clicked.connect(self.build_expression)
-        cancel_btn.clicked.connect(self.reject)
-
-        self.case_enable_check.stateChanged.connect(self._toggle_case_block)
-
-        self.add_when_row()
-
-    def _toggle_case_block(self, state):
-        enabled = state == Qt.Checked
-        self.case_group.setEnabled(enabled)
-
-    def add_when_row(self):
-        row_layout = QHBoxLayout()
-        cols_info = self.controller.get_table_columns(self.table_name)
-
-        col_combo = QComboBox()
-        col_combo.setMinimumWidth(150)
-        col_combo.view().setMinimumWidth(180)
-        col_combo.addItems([c['name'] for c in cols_info])
-
-        op_combo = QComboBox()
-        op_combo.setMinimumWidth(120)
-        op_combo.view().setMinimumWidth(150)
-        op_combo.addItems(["=", "!=", ">", "<", ">=", "<=", "IS NULL", "IS NOT NULL"])
-
-        when_value_edit = QLineEdit()
-        when_value_edit.setPlaceholderText("Значение для сравнения (кроме IS NULL)")
-
-        then_value_edit = QLineEdit()
-        then_value_edit.setPlaceholderText("THEN (результат)")
-
-        row_layout.addWidget(col_combo)
-        row_layout.addWidget(op_combo)
-        row_layout.addWidget(when_value_edit)
-        row_layout.addWidget(QLabel("THEN"))
-        row_layout.addWidget(then_value_edit)
-
-        self.when_container.addLayout(row_layout)
-        self.when_rows.append((col_combo, op_combo, when_value_edit, then_value_edit))
-
-    def _quote_if_needed(self, val: str):
-        if val is None:
-            return "NULL"
-        val = val.strip()
-        if val == "":
-            return "''"
-        try:
-            float(val)
-            return val
-        except Exception:
-            pass
-        if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
-            return val
-        return f"'{val}'"
-
-    def build_expression(self):
-        use_case = self.case_enable_check.isChecked()
-        expr = None
-        has_when = False
-
-        if use_case:
-            parts = ["CASE"]
-            for col_combo, op_combo, when_edit, then_edit in self.when_rows:
-                col = col_combo.currentText()
-                op = op_combo.currentText()
-                when_raw = when_edit.text().strip()
-                then_raw = then_edit.text().strip()
-
-                if op in ("IS NULL", "IS NOT NULL"):
-                    if not then_raw:
-                        continue
-                    parts.append(f"WHEN {self.table_name}.{col} {op} THEN {self._quote_if_needed(then_raw)}")
-                    has_when = True
-                else:
-                    if not when_raw or not then_raw:
-                        continue
-                    q_when = self._quote_if_needed(when_raw)
-                    parts.append(f"WHEN {self.table_name}.{col} {op} {q_when} THEN {self._quote_if_needed(then_raw)}")
-                    has_when = True
-
-            if not has_when:
-                QMessageBox.warning(
-                    self,
-                    "Ошибка",
-                    "Если CASE включён, необходимо добавить хотя бы одно корректное условие WHEN ... THEN ...\n"
-                    "Либо отключите CASE (снимите галочку), чтобы использовать только COALESCE/NULLIF."
-                )
-                return
-
-            else_val = self.else_edit.text().strip()
-            if else_val:
-                parts.append(f"ELSE {self._quote_if_needed(else_val)}")
-            parts.append("END")
-            expr = " ".join(parts)
-
-        n1 = self.nullif_first_edit.text().strip()
-        n2 = self.nullif_second_edit.text().strip()
-        if n1 and n2:
-            base = expr if expr else n1
-            expr = f"NULLIF({base}, {self._quote_if_needed(n2)})"
-
-        coalesce_val = self.coalesce_value_edit.text().strip()
-        if coalesce_val:
-            base = expr if expr else "NULL"
-            expr = f"COALESCE({base}, {self._quote_if_needed(coalesce_val)})"
-
-        if expr is None:
-            QMessageBox.warning(
-                self,
-                "Ошибка",
-                "Ничего не задано: включите CASE или заполните поля COALESCE/NULLIF."
-            )
-            return
-
-        alias = self.case_alias_edit.text().strip()
-        if alias:
-            expr = f"{expr} AS {alias}"
-
-        self.final_expr = expr
-        self.accept()
-
-    def get_case_expression(self):
-        return self.final_expr
