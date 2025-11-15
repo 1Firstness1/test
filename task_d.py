@@ -675,7 +675,8 @@ class TaskDialog(QDialog):
             from datetime import datetime as _dt, date as _date
             for row_idx, row_data in enumerate(data):
                 for col_idx, value in enumerate(row_data):
-                    str_value = str(value) if value is not None else ""
+                    # Display NULL values as "NULL" text instead of empty string
+                    str_value = str(value) if value is not None else "NULL"
                     if isinstance(value, (int, float)):
                         item = NumericTableItem(str_value, value)
                     elif isinstance(value, _date):
@@ -686,6 +687,10 @@ class TaskDialog(QDialog):
                         item = BooleanTableItem(str_value, value)
                     else:
                         item = QTableWidgetItem(str_value)
+                    # Color NULL values differently for better visibility
+                    if value is None:
+                        from PySide6.QtGui import QColor
+                        item.setForeground(QColor(150, 150, 150))  # Gray color for NULL
                     self.data_table.setItem(row_idx, col_idx, item)
 
             mode = "JOIN" if self.is_join_mode else "TABLE"
@@ -760,7 +765,8 @@ class TaskDialog(QDialog):
 
                 for row_idx, row_data in enumerate(results):
                     for col_idx, value in enumerate(row_data):
-                        str_value = str(value) if value is not None else ""
+                        # Display NULL values as "NULL" text instead of empty string
+                        str_value = str(value) if value is not None else "NULL"
                         if isinstance(value, (int, float)):
                             item = NumericTableItem(str_value, value)
                         elif isinstance(value, date):
@@ -771,6 +777,10 @@ class TaskDialog(QDialog):
                             item = BooleanTableItem(str_value, value)
                         else:
                             item = QTableWidgetItem(str_value)
+                        # Color NULL values differently for better visibility
+                        if value is None:
+                            from PySide6.QtGui import QColor
+                            item.setForeground(QColor(150, 150, 150))  # Gray color for NULL
                         self.data_table.setItem(row_idx, col_idx, item)
 
                 self.logger.info(f"Выполнен JOIN запрос: {len(results)} строк")
@@ -2374,6 +2384,7 @@ class SubqueryDialog(QDialog):
         extra_val = self.filter_value_edit.text().strip()
 
         # Внутренний WHERE: всегда корреляция по внешней таблице
+        # Используем имя таблицы напрямую без схемы, поддерживая корреляцию
         where_parts = [f"{sub_alias}.{corr_inner} = {self.outer_table}.{corr_outer}"]
         # Дополнительное условие — фильтр по самому столбцу подзапроса, а не по corr_inner
         if extra_val:
@@ -2386,8 +2397,9 @@ class SubqueryDialog(QDialog):
             outer_col = self.outer_col_combo.currentText()
             comp = self.comp_op_combo.currentText()
             # ANY/ALL сравнивают внешний столбец с выборкой одного столбца из подзапроса
+            # Не добавляем префикс таблицы к внешнему столбцу, он берется из контекста
             self.clause = (
-                f"{self.outer_table}.{outer_col} {comp} {mode} "
+                f"{outer_col} {comp} {mode} "
                 f"(SELECT {sub_alias}.{sub_col} FROM {sub_table} AS {sub_alias} WHERE {where_clause})"
             )
         self.accept()
@@ -2407,6 +2419,7 @@ class CaseExpressionDialog(QDialog):
         self.when_rows = []
         self.case_alias_edit = None
         self.else_edit = None
+        self.coalesce_column_combo = None  # Add this
         self.coalesce_value_edit = None
         self.nullif_first_edit = None
         self.nullif_second_edit = None
@@ -2453,6 +2466,18 @@ class CaseExpressionDialog(QDialog):
         layout.addWidget(QLabel("Алиас (имя нового столбца):"))
         self.case_alias_edit = QLineEdit()
         layout.addWidget(self.case_alias_edit)
+
+        # Add a field to specify the column for COALESCE to operate on
+        layout.addWidget(QLabel("COALESCE столбец (для замены NULL, опционально):"))
+        coalesce_column_layout = QHBoxLayout()
+        self.coalesce_column_combo = QComboBox()
+        self.coalesce_column_combo.setMinimumWidth(200)
+        self.coalesce_column_combo.view().setMinimumWidth(240)
+        cols_info = self.controller.get_table_columns(self.table_name)
+        self.coalesce_column_combo.addItem("")  # Empty option
+        self.coalesce_column_combo.addItems([c['name'] for c in cols_info])
+        coalesce_column_layout.addWidget(self.coalesce_column_combo)
+        layout.addLayout(coalesce_column_layout)
 
         layout.addWidget(QLabel("COALESCE значение (подставить вместо NULL, опционально):"))
         self.coalesce_value_edit = QLineEdit()
@@ -2578,20 +2603,29 @@ class CaseExpressionDialog(QDialog):
             expr = f"NULLIF({base_for_nullif}, {self._quote_if_needed(n2)})"
 
         coalesce_val = self.coalesce_value_edit.text().strip()
+        coalesce_column = self.coalesce_column_combo.currentText().strip()
+        
         if coalesce_val:
-            # Для COALESCE базой служит либо результат CASE/NULLIF, либо
-            # непосредственно столбец/выражение, если CASE/NULLIF не заданы.
-            # Так мы меняем только NULL, но не подменяем реальные значения.
-            if expr is None:
-                base_for_coalesce = n1 if n1 else None
-            else:
+            # COALESCE должен работать только с NULL значениями
+            # Базой для COALESCE служит либо результат CASE/NULLIF, 
+            # либо выбранный столбец, либо NULLIF первое поле
+            if expr is not None:
+                # Если уже есть CASE или NULLIF, применяем COALESCE к результату
                 base_for_coalesce = expr
+            elif coalesce_column:
+                # Если указан столбец для COALESCE, используем его
+                base_for_coalesce = f"{self.table_name}.{coalesce_column}"
+            elif n1:
+                # Если указан NULLIF expr1 но не expr2, используем его
+                base_for_coalesce = n1
+            else:
+                base_for_coalesce = None
 
             if base_for_coalesce is None:
                 QMessageBox.warning(
                     self,
                     "Ошибка",
-                    "Для COALESCE необходимо указать столбец (expr1) или включить CASE/NULLIF."
+                    "Для COALESCE необходимо указать столбец или включить CASE/NULLIF."
                 )
                 return
 
@@ -2683,6 +2717,7 @@ class TypeManagementDialog(QDialog):
         # Делаем область полей прокручиваемой и не сжимающейся по высоте
         self.comp_scroll = QScrollArea()
         self.comp_scroll.setWidgetResizable(True)
+        self.comp_scroll.setMinimumHeight(200)  # Set minimum height to ensure visibility
         comp_inner = QWidget()
         self.comp_fields_layout = QVBoxLayout(comp_inner)
         self.comp_fields_layout.setContentsMargins(0, 0, 0, 0)
@@ -3946,7 +3981,8 @@ class StringFunctionsDialog(QDialog):
 
                 for row_idx, row_data in enumerate(results):
                     for col_idx, value in enumerate(row_data):
-                        str_value = str(value) if value is not None else ""
+                        # Display NULL values as "NULL" text instead of empty string
+                        str_value = str(value) if value is not None else "NULL"
 
                         if isinstance(value, (int, float)):
                             item = NumericTableItem(str_value, value)
@@ -3959,6 +3995,11 @@ class StringFunctionsDialog(QDialog):
                         else:
                             item = QTableWidgetItem(str_value)
 
+                        # Color NULL values differently for better visibility
+                        if value is None:
+                            from PySide6.QtGui import QColor
+                            item.setForeground(QColor(150, 150, 150))  # Gray color for NULL
+                        
                         self.result_table.setItem(row_idx, col_idx, item)
 
                 self.result_table.resizeColumnsToContents()
